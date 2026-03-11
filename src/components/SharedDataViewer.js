@@ -5,7 +5,7 @@ import {
   StyleSheet, ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { COLORS, SCORE_COLORS, SCORE_LABELS, calcScore, getGrade } from "../constants";
+import { COLORS, calcScore, getGrade, getScoreColor } from "../constants";
 
 export default function SharedDataViewer({ targetId, targetNickname, fetchSharedData, onClose }) {
   const [loading, setLoading] = useState(true);
@@ -141,7 +141,7 @@ export default function SharedDataViewer({ targetId, targetNickname, fetchShared
                           return (
                             <View key={i} style={[styles.tableCell, styles.tableScoreCell]}>
                               {s > 0
-                                ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? SCORE_COLORS[s] : "#64748b" }}>
+                                ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? getScoreColor(s) : "#64748b" }}>
                                     {s}{isTop ? "★" : ""}
                                   </Text>
                                 : <Text style={{ color: "#374151", fontSize: 12 }}>-</Text>}

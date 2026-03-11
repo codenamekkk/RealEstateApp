@@ -1,7 +1,7 @@
 // src/screens/CompareTab.js
 import React from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
-import { COLORS, SCORE_COLORS, calcScore, getGrade } from "../constants";
+import { COLORS, calcScore, getGrade, getScoreColor } from "../constants";
 
 function PropertyCard({ property, criteria, onPress, rank }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
@@ -91,7 +91,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
                 return (
                   <View key={i} style={[styles.tableCell, styles.tableScoreCell]}>
                     {s > 0
-                      ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? SCORE_COLORS[s] : "#64748b" }}>
+                      ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? getScoreColor(s) : "#64748b" }}>
                           {s}{isTop ? "★" : ""}
                         </Text>
                       : <Text style={{ color: "#374151", fontSize: 12 }}>-</Text>

@@ -4,18 +4,26 @@ import {
   View, Text, ScrollView, TouchableOpacity,
   TextInput, StyleSheet,
 } from "react-native";
-import { COLORS, SCORE_LABELS, SCORE_COLORS, calcScore, getGrade } from "../constants";
+import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel } from "../constants";
 
 function ScoreButton({ value, selected, onPress, color }) {
+  const isHalf = value % 1 !== 0;
+  const size = isHalf ? 20 : 36;
   return (
     <TouchableOpacity
       onPress={() => onPress(value)}
       style={[
-        styles.scoreBtn,
-        { borderColor: selected ? color : "#2a2a3a", backgroundColor: selected ? color : "transparent" },
+        {
+          width: size, height: size, borderRadius: size / 2,
+          borderWidth: 2, alignItems: "center", justifyContent: "center",
+          borderColor: selected ? color : "#2a2a3a",
+          backgroundColor: selected ? color : "transparent",
+        },
       ]}
     >
-      <Text style={{ color: selected ? "#fff" : "#888", fontWeight: "700", fontSize: 13 }}>{value}</Text>
+      <Text style={{ color: selected ? "#fff" : "#888", fontWeight: "700", fontSize: isHalf ? 9 : 13 }}>
+        {isHalf ? "·" : value}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -105,7 +113,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           {/* Criteria */}
           {activeCriteria.map(c => {
             const score = selectedProp.scores[c.id] || 0;
-            const color = score > 0 ? SCORE_COLORS[score] : "#374151";
+            const color = score > 0 ? getScoreColor(score) : "#374151";
+            const label = score > 0 ? getScoreLabel(score) : "";
             return (
               <View key={c.id} style={[styles.criteriaCard, { borderColor: score > 0 ? color + "44" : COLORS.border }]}>
                 <View style={styles.criteriaHeader}>
@@ -118,12 +127,12 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     </View>
                     {c.description ? <Text style={styles.criteriaDesc}>{c.description}</Text> : null}
                   </View>
-                  {score > 0 && <Text style={[styles.scoreLabel, { color }]}>{SCORE_LABELS[score]}</Text>}
+                  {score > 0 && label ? <Text style={[styles.scoreLabel, { color }]}>{label}</Text> : null}
                 </View>
                 <View style={styles.scoreRow}>
-                  {[1, 2, 3, 4, 5].map(v => (
+                  {SCORE_VALUES.map(v => (
                     <ScoreButton key={v} value={v} selected={score === v}
-                      onPress={val => setScore(selectedProp.id, c.id, score === val ? null : val)} color={SCORE_COLORS[v]} />
+                      onPress={val => setScore(selectedProp.id, c.id, score === val ? null : val)} color={getScoreColor(v)} />
                   ))}
                 </View>
               </View>
@@ -178,7 +187,6 @@ const styles = StyleSheet.create({
   scoreLabel:     { fontSize: 11, fontWeight: "700" },
   weightBadge:    { backgroundColor: COLORS.primarySoft, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 1 },
   weightBadgeText: { color: "#818cf8", fontSize: 10, fontWeight: "700" },
-  scoreRow:    { flexDirection: "row", gap: 8 },
-  scoreBtn:    { width: 36, height: 36, borderRadius: 18, borderWidth: 2, alignItems: "center", justifyContent: "center" },
+  scoreRow:    { flexDirection: "row", gap: 4, alignItems: "center" },
   memoInput:   { backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, padding: 14, color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlignVertical: "top" },
 });

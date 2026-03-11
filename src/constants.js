@@ -18,6 +18,17 @@ export const DEFAULT_CRITERIA = [
 
 export const SCORE_LABELS = ["", "매우 나쁨", "나쁨", "보통", "좋음", "매우 좋음"];
 export const SCORE_COLORS = ["", "#ef4444", "#f97316", "#eab308", "#22c55e", "#10b981"];
+export const SCORE_VALUES = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+
+export function getScoreColor(score) {
+  const idx = Math.round(score);
+  return SCORE_COLORS[idx] || "#374151";
+}
+
+export function getScoreLabel(score) {
+  if (score % 1 === 0) return SCORE_LABELS[score] || "";
+  return "";
+}
 
 export const COLORS = {
   bg:          "#0d0d14",
