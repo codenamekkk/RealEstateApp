@@ -1,5 +1,4 @@
 // src/api.js — 서버 연결 설정
-// 배포 후에는 실제 서버 주소로 변경하세요
-const SERVER_URL = "http://localhost:3000";
+const SERVER_URL = "https://realestateapp-e2il.onrender.com";
 
 export default SERVER_URL;
