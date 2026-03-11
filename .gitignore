@@ -9,3 +9,5 @@ dist/
 *.orig.*
 web-build/
 google-service-account.json
+server/.env
+server/rooms.db

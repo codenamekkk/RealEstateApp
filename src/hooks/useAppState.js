@@ -1,8 +1,8 @@
 // src/hooks/useAppState.js
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { doc, setDoc, onSnapshot } from "firebase/firestore";
-import { db } from "../firebase";
+import { io } from "socket.io-client";
+import SERVER_URL from "../api";
 import { DEFAULT_CRITERIA, generateId } from "../constants";
 
 const LOCAL_KEY = "realestate_local_state";
@@ -32,11 +32,10 @@ export default function useAppState() {
   const setCriteria = isSharing ? setSharedCriteria   : setLocalCriteria;
   const setProperties = isSharing ? setSharedProperties : setLocalProperties;
 
-  const unsubscribeRef = useRef(null);
-  const lastWriteRef   = useRef(0);
-  const nextPropId     = useRef(2);
-  const nextCritId     = useRef(10);
-  const pushTimer      = useRef(null);
+  const socketRef  = useRef(null);
+  const pushTimer  = useRef(null);
+  const nextPropId = useRef(2);
+  const nextCritId = useRef(10);
 
   // ── Persist local state ──────────────────────────────────────
   useEffect(() => {
@@ -51,89 +50,112 @@ export default function useAppState() {
   }, []);
 
   useEffect(() => {
-    if (isSharing) return; // 공유 중엔 로컬 저장 건너뜀
+    if (isSharing) return;
     AsyncStorage.setItem(LOCAL_KEY, JSON.stringify({ criteria: localCriteria, properties: localProperties }));
   }, [localCriteria, localProperties, isSharing]);
 
-  // ── Firebase helpers ─────────────────────────────────────────
-  async function writeRoom(rc, crit, props) {
-    try {
-      lastWriteRef.current = Date.now();
-      setSyncStatus("syncing");
-      await setDoc(doc(db, "rooms", rc), {
-        criteria: crit,
-        properties: props,
-        updatedBy: myId,
-        updatedAt: Date.now(),
-      });
-      setSyncStatus("synced");
-      setLastSyncTime(new Date());
-    } catch (e) {
-      setSyncStatus("error");
-      console.error("Firebase write error:", e);
-    }
-  }
+  // ── Socket helpers ─────────────────────────────────────────
+  function connectSocket() {
+    if (socketRef.current) return socketRef.current;
+    const socket = io(SERVER_URL, { transports: ["websocket"] });
+    socketRef.current = socket;
 
-  function subscribeRoom(rc) {
-    if (unsubscribeRef.current) unsubscribeRef.current();
-    unsubscribeRef.current = onSnapshot(doc(db, "rooms", rc), snap => {
-      if (!snap.exists()) return;
-      const data = snap.data();
-      // 내가 방금 쓴 변경은 무시 (2.5초 내)
-      if (data.updatedBy === myId && Date.now() - lastWriteRef.current < 2500) return;
-      setSharedCriteria(data.criteria);
-      setSharedProperties(data.properties);
+    socket.on("room-updated", ({ criteria: crit, properties: props, updatedBy }) => {
+      setSharedCriteria(crit);
+      setSharedProperties(props);
       setLastSyncTime(new Date());
       setSyncStatus("synced");
     });
+
+    socket.on("room-closed", () => {
+      handleLeaveRoom();
+    });
+
+    return socket;
   }
 
-  function stopSubscription() {
-    if (unsubscribeRef.current) { unsubscribeRef.current(); unsubscribeRef.current = null; }
+  function disconnectSocket() {
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
   }
 
   // ── Auto-push when shared state changes ──────────────────────
   useEffect(() => {
-    if (!isSharing || !roomCode) return;
+    if (!isSharing || !roomCode || !socketRef.current) return;
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => {
-      writeRoom(roomCode, sharedCriteria, sharedProperties);
+      setSyncStatus("syncing");
+      socketRef.current.emit("sync-data", {
+        code: roomCode,
+        criteria: sharedCriteria,
+        properties: sharedProperties,
+        updatedBy: myId,
+      });
+      setSyncStatus("synced");
+      setLastSyncTime(new Date());
     }, 700);
   }, [sharedCriteria, sharedProperties]);
 
-  useEffect(() => () => stopSubscription(), []);
+  useEffect(() => () => disconnectSocket(), []);
 
   // ── Room actions ─────────────────────────────────────────────
   async function handleCreateRoom(targetId) {
-    const rc = generateId(6);
-    const initCrit  = JSON.parse(JSON.stringify(localCriteria));
-    const initProps = JSON.parse(JSON.stringify(localProperties));
-    setRoomCode(rc);
-    setSharedWith(targetId);
-    setSharedCriteria(initCrit);
-    setSharedProperties(initProps);
-    await writeRoom(rc, initCrit, initProps);
-    subscribeRoom(rc);
+    try {
+      const initCrit  = JSON.parse(JSON.stringify(localCriteria));
+      const initProps = JSON.parse(JSON.stringify(localProperties));
+
+      const res = await fetch(`${SERVER_URL}/api/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creatorId: myId,
+          partnerId: targetId,
+          criteria: initCrit,
+          properties: initProps,
+        }),
+      });
+      const { code } = await res.json();
+
+      setRoomCode(code);
+      setSharedWith(targetId);
+      setSharedCriteria(initCrit);
+      setSharedProperties(initProps);
+
+      const socket = connectSocket();
+      socket.emit("join-room", code);
+    } catch (e) {
+      console.error("방 생성 실패:", e);
+    }
   }
 
-  async function handleJoinRoom(rc) {
-    const { getDoc } = await import("firebase/firestore");
-    const snap = await getDoc(doc(db, "rooms", rc));
-    if (snap.exists()) {
-      const data = snap.data();
-      setRoomCode(rc);
-      setSharedWith(data.updatedBy || "상대방");
+  async function handleJoinRoom(code) {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/rooms/${code}`);
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      setRoomCode(code);
+      setSharedWith(data.creatorId || "상대방");
       setSharedCriteria(data.criteria);
       setSharedProperties(data.properties);
-      subscribeRoom(rc);
+
+      const socket = connectSocket();
+      socket.emit("join-room", code);
       return true;
+    } catch (e) {
+      console.error("방 입장 실패:", e);
+      return false;
     }
-    return false;
   }
 
   function handleLeaveRoom() {
-    stopSubscription();
-    // 공유 중 변경 내용을 로컬에 반영 (작업 연속성 유지)
+    if (socketRef.current && roomCode) {
+      socketRef.current.emit("leave-room", roomCode);
+    }
+    disconnectSocket();
+    // 공유 중 변경 내용을 로컬에 반영
     setLocalCriteria(JSON.parse(JSON.stringify(sharedCriteria)));
     setLocalProperties(JSON.parse(JSON.stringify(sharedProperties)));
     setSharedWith(null);
