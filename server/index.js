@@ -207,10 +207,14 @@ app.get("/api/users/:targetId/shared-data", (req, res) => {
   const user = db.prepare("SELECT criteria, properties, nickname FROM users WHERE id = ?").get(req.params.targetId);
   if (!user) return res.status(404).json({ error: "사용자를 찾을 수 없습니다" });
 
+  let parsedCriteria, parsedProperties;
+  try { parsedCriteria = JSON.parse(user.criteria); } catch { parsedCriteria = []; }
+  try { parsedProperties = JSON.parse(user.properties); } catch { parsedProperties = []; }
+
   res.json({
     nickname: user.nickname,
-    criteria: JSON.parse(user.criteria),
-    properties: JSON.parse(user.properties),
+    criteria: parsedCriteria,
+    properties: parsedProperties,
   });
 });
 

@@ -30,10 +30,19 @@ export default function ShareModal({
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState("");
 
-  const translateY = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
 
   useEffect(() => {
-    if (visible && onRefresh) onRefresh();
+    if (visible) {
+      if (onRefresh) onRefresh();
+      Animated.spring(translateY, {
+        toValue: 0,
+        useNativeDriver: true,
+        bounciness: 4,
+      }).start();
+    } else {
+      translateY.setValue(SCREEN_HEIGHT);
+    }
   }, [visible]);
 
   const panResponder = useRef(
@@ -50,7 +59,6 @@ export default function ShareModal({
             duration: 200,
             useNativeDriver: true,
           }).start(() => {
-            translateY.setValue(0);
             handleClose();
           });
         } else {
@@ -111,10 +119,10 @@ export default function ShareModal({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior="padding"
       >
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={handleClose}>
         <Animated.View

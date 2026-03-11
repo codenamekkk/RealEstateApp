@@ -13,13 +13,46 @@ import CriteriaTab from "./src/screens/CriteriaTab";
 import ShareModal  from "./src/components/ShareModal";
 import SharedDataViewer from "./src/components/SharedDataViewer";
 
+class ErrorBoundary extends React.Component {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error, info) { console.error("앱 오류:", error, info); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaProvider>
+          <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <Text style={{ fontSize: 18, color: COLORS.text, fontWeight: "700", marginBottom: 10 }}>오류가 발생했습니다</Text>
+            <Text style={{ fontSize: 13, color: COLORS.textMuted, textAlign: "center", marginBottom: 20 }}>앱을 다시 시작해 주세요</Text>
+            <TouchableOpacity
+              onPress={() => this.setState({ hasError: false })}
+              style={{ backgroundColor: COLORS.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 10 }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700" }}>다시 시도</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaProvider>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const TABS = [
   { key: "score",   label: "📊 점수 입력" },
   { key: "compare", label: "🔍 매물 비교" },
   { key: "criteria",label: "⚙️ 평가 항목" },
 ];
 
-export default function App() {
+export default function AppWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+function App() {
   const [activeTab,     setActiveTab]     = useState(0);
   const [shareVisible,  setShareVisible]  = useState(false);
   const [viewingShared, setViewingShared] = useState(null); // { userId, nickname }

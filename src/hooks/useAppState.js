@@ -51,16 +51,22 @@ export default function useAppState() {
       setNickname(userNickname);
       myIdRef.current = userId;
 
-      // Register on server
-      try {
-        await fetch(`${SERVER_URL}/api/users`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: userId, nickname: userNickname }),
-        });
-      } catch (e) {
-        console.log("서버 등록 실패 (오프라인?):", e.message);
-      }
+      // Register on server (1회 재시도)
+      const registerUser = async (retries = 1) => {
+        try {
+          await fetch(`${SERVER_URL}/api/users`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: userId, nickname: userNickname }),
+          });
+        } catch (e) {
+          console.warn("서버 등록 실패:", e.message);
+          if (retries > 0) {
+            setTimeout(() => registerUser(retries - 1), 3000);
+          }
+        }
+      };
+      await registerUser();
 
       // Load local data
       const raw = await AsyncStorage.getItem(LOCAL_KEY);
@@ -108,6 +114,9 @@ export default function useAppState() {
         body: JSON.stringify({ criteria: localCriteria, properties: localProperties }),
       }).catch(() => {});
     }, 1000);
+    return () => {
+      if (pushTimer.current) clearTimeout(pushTimer.current);
+    };
   }, [localCriteria, localProperties, myId]);
 
   // ── Socket ─────────────────────────────────────────────────
@@ -149,6 +158,7 @@ export default function useAppState() {
 
   function disconnectSocket() {
     if (socketRef.current) {
+      socketRef.current.removeAllListeners();
       socketRef.current.disconnect();
       socketRef.current = null;
     }

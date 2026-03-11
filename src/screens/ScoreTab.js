@@ -59,7 +59,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         </TouchableOpacity>
       </ScrollView>
 
-      {selectedProp && (
+      {selectedProp ? (
         <>
           {/* Property info */}
           <View style={styles.card}>
@@ -141,6 +141,13 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             style={styles.memoInput}
           />
         </>
+      ) : (
+        <View style={{ alignItems: "center", paddingTop: 80 }}>
+          <Text style={{ fontSize: 15, color: COLORS.textMuted, marginBottom: 8 }}>매물이 없습니다</Text>
+          <TouchableOpacity onPress={handleAddProperty} style={{ paddingHorizontal: 20, paddingVertical: 10, backgroundColor: COLORS.primary, borderRadius: 10 }}>
+            <Text style={{ color: "#fff", fontWeight: "700" }}>매물 추가</Text>
+          </TouchableOpacity>
+        </View>
       )}
       <View style={{ height: 40 }} />
     </ScrollView>

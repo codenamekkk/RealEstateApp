@@ -46,7 +46,11 @@ export function getGrade(percent) {
 
 export function calcScore(property, activeCriteria) {
   const totalWeight = activeCriteria.reduce((s, c) => s + c.weight, 0);
-  const totalScore  = activeCriteria.reduce((s, c) => s + (property.scores[c.id] || 0) * c.weight, 0);
+  const totalScore  = activeCriteria.reduce((s, c) => {
+    const raw = Number(property.scores[c.id]);
+    const score = Number.isFinite(raw) ? raw : 0;
+    return s + score * c.weight;
+  }, 0);
   const max = totalWeight * 5;
   return { percent: max > 0 ? Math.round((totalScore / max) * 100) : 0, totalScore, max };
 }
