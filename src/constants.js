@@ -5,11 +5,15 @@ export const DEFAULT_CRITERIA = [
   { id: 2, name: "교통 접근성",    weight: 4, description: "대중교통 및 도로 접근성",          hidden: false },
   { id: 3, name: "학군",           weight: 3, description: "주변 학교 수준 및 학원가",         hidden: false },
   { id: 4, name: "편의시설",       weight: 3, description: "마트, 병원, 공원 등",              hidden: false },
-  { id: 5, name: "일조량/향",      weight: 2, description: "채광 및 집의 방향",               hidden: false },
+  { id: 5, name: "일조량/채광",    weight: 2, description: "채광 및 집의 방향",               hidden: false },
   { id: 6, name: "층수/뷰",        weight: 2, description: "층수 및 전망",                    hidden: false },
   { id: 7, name: "건물 연식",      weight: 3, description: "신축 여부, 관리 상태",             hidden: false },
   { id: 8, name: "소음/환경",      weight: 2, description: "주변 소음 및 환경",               hidden: false },
   { id: 9, name: "재개발/리모델링",weight: 4, description: "재개발·재건축·리모델링 가능성",   hidden: false },
+  { id: 10, name: "관리비",        weight: 2, description: "월 관리비, 난방 방식",               hidden: false },
+  { id: 11, name: "평면 구조",     weight: 3, description: "방 배치, 수납공간, 베란다 확장",     hidden: false },
+  { id: 12, name: "주차 환경",     weight: 2, description: "세대당 주차 대수, 주차 편의성",      hidden: false },
+  { id: 13, name: "커뮤니티 시설", weight: 2, description: "헬스장, 놀이터, 독서실 등 단지 시설",hidden: false },
 ];
 
 export const SCORE_LABELS = ["", "매우 나쁨", "나쁨", "보통", "좋음", "매우 좋음"];
