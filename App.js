@@ -1,9 +1,10 @@
 // App.js  ─ 앱 진입점
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import {
-  View, Text, TouchableOpacity, StyleSheet, StatusBar, Platform,
+  View, Text, TouchableOpacity, StyleSheet, StatusBar,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import PagerView from "react-native-pager-view";
 import { COLORS } from "./src/constants";
 import useAppState from "./src/hooks/useAppState";
 import ScoreTab    from "./src/screens/ScoreTab";
@@ -18,8 +19,9 @@ const TABS = [
 ];
 
 export default function App() {
-  const [activeTab,     setActiveTab]     = useState("score");
+  const [activeTab,     setActiveTab]     = useState(0);
   const [shareVisible,  setShareVisible]  = useState(false);
+  const pagerRef = useRef(null);
 
   const state = useAppState();
   const {
@@ -31,6 +33,15 @@ export default function App() {
   } = state;
 
   const syncDot = syncStatus === "syncing" ? "#eab308" : "#10b981";
+
+  const handleTabPress = useCallback((index) => {
+    setActiveTab(index);
+    pagerRef.current?.setPage(index);
+  }, []);
+
+  const handlePageSelected = useCallback((e) => {
+    setActiveTab(e.nativeEvent.position);
+  }, []);
 
   return (
     <SafeAreaProvider>
@@ -83,22 +94,27 @@ export default function App() {
 
       {/* ── Tab bar ── */}
       <View style={styles.tabBar}>
-        {TABS.map(tab => (
+        {TABS.map((tab, index) => (
           <TouchableOpacity
             key={tab.key}
-            onPress={() => setActiveTab(tab.key)}
-            style={[styles.tab, activeTab === tab.key && styles.tabActive]}
+            onPress={() => handleTabPress(index)}
+            style={[styles.tab, activeTab === index && styles.tabActive]}
           >
-            <Text style={[styles.tabText, activeTab === tab.key && styles.tabTextActive]}>
+            <Text style={[styles.tabText, activeTab === index && styles.tabTextActive]}>
               {tab.label}
             </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {/* ── Screens ── */}
-      <View style={{ flex: 1 }}>
-        {activeTab === "score" && (
+      {/* ── Swipeable Screens ── */}
+      <PagerView
+        ref={pagerRef}
+        style={{ flex: 1 }}
+        initialPage={0}
+        onPageSelected={handlePageSelected}
+      >
+        <View key="score" style={{ flex: 1 }}>
           <ScoreTab
             criteria={criteria} properties={properties}
             setScore={setScore}
@@ -106,16 +122,16 @@ export default function App() {
             removeProperty={removeProperty}
             updateProp={updateProp}
           />
-        )}
-        {activeTab === "compare" && (
+        </View>
+        <View key="compare" style={{ flex: 1 }}>
           <CompareTab
             criteria={criteria} properties={properties}
             onGoToScore={(propId) => {
-              setActiveTab("score");
+              handleTabPress(0);
             }}
           />
-        )}
-        {activeTab === "criteria" && (
+        </View>
+        <View key="criteria" style={{ flex: 1 }}>
           <CriteriaTab
             criteria={criteria}
             addCriteria={addCriteria}
@@ -123,8 +139,8 @@ export default function App() {
             toggleHidden={toggleHidden}
             updateCriteria={updateCriteria}
           />
-        )}
-      </View>
+        </View>
+      </PagerView>
 
       {/* ── Share Modal ── */}
       <ShareModal

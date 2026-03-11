@@ -1,11 +1,15 @@
 // src/components/ShareModal.js
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import {
   Modal, View, Text, TouchableOpacity,
   TextInput, StyleSheet, Alert,
+  Animated, PanResponder, Dimensions,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { COLORS } from "../constants";
+
+const SCREEN_HEIGHT = Dimensions.get("window").height;
+const DISMISS_THRESHOLD = 100;
 
 export default function ShareModal({
   visible, onClose,
@@ -17,6 +21,36 @@ export default function ShareModal({
   const [joinCode, setJoinCode] = useState("");
   const isSharing = !!sharedWith;
 
+  const translateY = useRef(new Animated.Value(0)).current;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 8,
+      onPanResponderMove: (_, g) => {
+        if (g.dy > 0) translateY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > DISMISS_THRESHOLD || g.vy > 0.5) {
+          Animated.timing(translateY, {
+            toValue: SCREEN_HEIGHT,
+            duration: 200,
+            useNativeDriver: true,
+          }).start(() => {
+            translateY.setValue(0);
+            handleClose();
+          });
+        } else {
+          Animated.spring(translateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 8,
+          }).start();
+        }
+      },
+    })
+  ).current;
+
   async function handleCopy() {
     await Clipboard.setStringAsync(roomCode);
     Alert.alert("복사됨", "입장 코드가 클립보드에 복사됐어요.");
@@ -27,107 +61,114 @@ export default function ShareModal({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={handleClose}>
-        <TouchableOpacity activeOpacity={1} style={styles.sheet}>
+        <Animated.View
+          style={[styles.sheet, { transform: [{ translateY }] }]}
+          {...panResponder.panHandlers}
+        >
+          <TouchableOpacity activeOpacity={1}>
 
-          {/* Handle bar */}
-          <View style={styles.handle} />
-
-          {/* My ID */}
-          <View style={styles.idSection}>
-            <Text style={styles.idLabel}>내 아이디</Text>
-            <View style={styles.idRow}>
-              <Text style={styles.idValue}>{myId}</Text>
-              <Text style={styles.idHint}>공유 시 상대에게 알려주세요</Text>
-            </View>
-          </View>
-
-          {isSharing ? (
-            /* ── Currently sharing ── */
-            <View>
-              <View style={styles.sharingBox}>
-                <Text style={styles.sharingTitle}>🔗 {sharedWith}와 공유 중</Text>
-                <Text style={styles.sharingCode}>입장 코드: <Text style={styles.codeValue}>{roomCode}</Text></Text>
-              </View>
-              <TouchableOpacity onPress={handleCopy} style={styles.copyBtn}>
-                <Text style={styles.copyBtnText}>📋 입장 코드 복사</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => { onLeaveRoom(); handleClose(); }} style={styles.leaveBtn}>
-                <Text style={styles.leaveBtnText}>공유 종료</Text>
-              </TouchableOpacity>
+            {/* Handle bar — 드래그 힌트 */}
+            <View style={styles.handleArea}>
+              <View style={styles.handle} />
             </View>
 
-          ) : view === "menu" ? (
-            /* ── Menu ── */
-            <View style={styles.menuContainer}>
-              <TouchableOpacity onPress={() => setView("create")} style={styles.menuCard}>
-                <Text style={styles.menuCardTitle}>✨ 새 공유 방 만들기</Text>
-                <Text style={styles.menuCardSub}>내 분석 데이터를 상대방과 공유</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setView("join")} style={[styles.menuCard, styles.menuCardSecondary]}>
-                <Text style={[styles.menuCardTitle, { color: COLORS.textMuted }]}>🚪 공유 방 입장하기</Text>
-                <Text style={styles.menuCardSub}>입장 코드로 참여</Text>
-              </TouchableOpacity>
-            </View>
-
-          ) : view === "create" ? (
-            /* ── Create room ── */
-            <View>
-              <Text style={styles.inputLabel}>공유할 상대방의 아이디를 입력하세요</Text>
-              <TextInput
-                value={targetId}
-                onChangeText={v => setTargetId(v.toUpperCase())}
-                placeholder="상대방 아이디 (예: AB12CD)"
-                placeholderTextColor={COLORS.textFaint}
-                maxLength={6}
-                autoCapitalize="characters"
-                style={styles.codeInput}
-              />
-              <View style={styles.btnRow}>
-                <TouchableOpacity onPress={() => setView("menu")} style={styles.cancelBtn}>
-                  <Text style={styles.cancelBtnText}>취소</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => { if (targetId.trim()) { onCreateRoom(targetId.trim()); handleClose(); setTargetId(""); } }}
-                  style={[styles.confirmBtn, !targetId.trim() && styles.confirmBtnDisabled]}
-                >
-                  <Text style={styles.confirmBtnText}>공유 시작</Text>
-                </TouchableOpacity>
+            {/* My ID */}
+            <View style={styles.idSection}>
+              <Text style={styles.idLabel}>내 아이디</Text>
+              <View style={styles.idRow}>
+                <Text style={styles.idValue}>{myId}</Text>
+                <Text style={styles.idHint}>공유 시 상대에게 알려주세요</Text>
               </View>
             </View>
 
-          ) : view === "join" ? (
-            /* ── Join room ── */
-            <View>
-              <Text style={styles.inputLabel}>상대방에게 받은 입장 코드를 입력하세요</Text>
-              <TextInput
-                value={joinCode}
-                onChangeText={v => setJoinCode(v.toUpperCase())}
-                placeholder="입장 코드 (예: XY9Z3A)"
-                placeholderTextColor={COLORS.textFaint}
-                maxLength={6}
-                autoCapitalize="characters"
-                style={styles.codeInput}
-              />
-              <View style={styles.btnRow}>
-                <TouchableOpacity onPress={() => setView("menu")} style={styles.cancelBtn}>
-                  <Text style={styles.cancelBtnText}>취소</Text>
+            {isSharing ? (
+              /* ── Currently sharing ── */
+              <View>
+                <View style={styles.sharingBox}>
+                  <Text style={styles.sharingTitle}>🔗 {sharedWith}와 공유 중</Text>
+                  <Text style={styles.sharingCode}>입장 코드: <Text style={styles.codeValue}>{roomCode}</Text></Text>
+                </View>
+                <TouchableOpacity onPress={handleCopy} style={styles.copyBtn}>
+                  <Text style={styles.copyBtnText}>📋 입장 코드 복사</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={async () => {
-                    if (!joinCode.trim()) return;
-                    const ok = await onJoinRoom(joinCode.trim());
-                    if (ok) { handleClose(); setJoinCode(""); }
-                    else Alert.alert("오류", "입장 코드를 찾을 수 없습니다. 다시 확인해주세요.");
-                  }}
-                  style={[styles.confirmBtn, !joinCode.trim() && styles.confirmBtnDisabled]}
-                >
-                  <Text style={styles.confirmBtnText}>입장</Text>
+                <TouchableOpacity onPress={() => { onLeaveRoom(); handleClose(); }} style={styles.leaveBtn}>
+                  <Text style={styles.leaveBtnText}>공유 종료</Text>
                 </TouchableOpacity>
               </View>
-            </View>
-          ) : null}
 
-        </TouchableOpacity>
+            ) : view === "menu" ? (
+              /* ── Menu ── */
+              <View style={styles.menuContainer}>
+                <TouchableOpacity onPress={() => setView("create")} style={styles.menuCard}>
+                  <Text style={styles.menuCardTitle}>✨ 새 공유 방 만들기</Text>
+                  <Text style={styles.menuCardSub}>내 분석 데이터를 상대방과 공유</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setView("join")} style={[styles.menuCard, styles.menuCardSecondary]}>
+                  <Text style={[styles.menuCardTitle, { color: COLORS.textMuted }]}>🚪 공유 방 입장하기</Text>
+                  <Text style={styles.menuCardSub}>입장 코드로 참여</Text>
+                </TouchableOpacity>
+              </View>
+
+            ) : view === "create" ? (
+              /* ── Create room ── */
+              <View>
+                <Text style={styles.inputLabel}>공유할 상대방의 아이디를 입력하세요</Text>
+                <TextInput
+                  value={targetId}
+                  onChangeText={v => setTargetId(v.toUpperCase())}
+                  placeholder="상대방 아이디 (예: AB12CD)"
+                  placeholderTextColor={COLORS.textFaint}
+                  maxLength={6}
+                  autoCapitalize="characters"
+                  style={styles.codeInput}
+                />
+                <View style={styles.btnRow}>
+                  <TouchableOpacity onPress={() => setView("menu")} style={styles.cancelBtn}>
+                    <Text style={styles.cancelBtnText}>취소</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => { if (targetId.trim()) { onCreateRoom(targetId.trim()); handleClose(); setTargetId(""); } }}
+                    style={[styles.confirmBtn, !targetId.trim() && styles.confirmBtnDisabled]}
+                  >
+                    <Text style={styles.confirmBtnText}>공유 시작</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+            ) : view === "join" ? (
+              /* ── Join room ── */
+              <View>
+                <Text style={styles.inputLabel}>상대방에게 받은 입장 코드를 입력하세요</Text>
+                <TextInput
+                  value={joinCode}
+                  onChangeText={v => setJoinCode(v.toUpperCase())}
+                  placeholder="입장 코드 (예: XY9Z3A)"
+                  placeholderTextColor={COLORS.textFaint}
+                  maxLength={6}
+                  autoCapitalize="characters"
+                  style={styles.codeInput}
+                />
+                <View style={styles.btnRow}>
+                  <TouchableOpacity onPress={() => setView("menu")} style={styles.cancelBtn}>
+                    <Text style={styles.cancelBtnText}>취소</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={async () => {
+                      if (!joinCode.trim()) return;
+                      const ok = await onJoinRoom(joinCode.trim());
+                      if (ok) { handleClose(); setJoinCode(""); }
+                      else Alert.alert("오류", "입장 코드를 찾을 수 없습니다. 다시 확인해주세요.");
+                    }}
+                    style={[styles.confirmBtn, !joinCode.trim() && styles.confirmBtnDisabled]}
+                  >
+                    <Text style={styles.confirmBtnText}>입장</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+          </TouchableOpacity>
+        </Animated.View>
       </TouchableOpacity>
     </Modal>
   );
@@ -136,7 +177,8 @@ export default function ShareModal({
 const styles = StyleSheet.create({
   overlay:       { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   sheet:         { backgroundColor: "#16162a", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40 },
-  handle:        { width: 36, height: 4, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 2, alignSelf: "center", marginBottom: 20 },
+  handleArea:    { alignItems: "center", paddingVertical: 8, marginTop: -8, marginBottom: 12 },
+  handle:        { width: 36, height: 4, backgroundColor: "rgba(255,255,255,0.25)", borderRadius: 2 },
   idSection:     { marginBottom: 20, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.07)" },
   idLabel:       { fontSize: 10, color: COLORS.textFaint, marginBottom: 6 },
   idRow:         { flexDirection: "row", alignItems: "center", gap: 10 },
