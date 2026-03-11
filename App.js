@@ -1,8 +1,9 @@
 // App.js  ─ 앱 진입점
 import React, { useState } from "react";
 import {
-  View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar,
+  View, Text, TouchableOpacity, StyleSheet, StatusBar, Platform,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "./src/constants";
 import useAppState from "./src/hooks/useAppState";
 import ScoreTab    from "./src/screens/ScoreTab";
@@ -32,7 +33,8 @@ export default function App() {
   const syncDot = syncStatus === "syncing" ? "#eab308" : "#10b981";
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaProvider>
+    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
       {/* ── Header ── */}
@@ -136,6 +138,7 @@ export default function App() {
         onJoinRoom={handleJoinRoom}
       />
     </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
