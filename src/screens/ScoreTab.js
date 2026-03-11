@@ -123,7 +123,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <View style={styles.scoreRow}>
                   {[1, 2, 3, 4, 5].map(v => (
                     <ScoreButton key={v} value={v} selected={score === v}
-                      onPress={val => setScore(selectedProp.id, c.id, val)} color={SCORE_COLORS[v]} />
+                      onPress={val => setScore(selectedProp.id, c.id, score === val ? null : val)} color={SCORE_COLORS[v]} />
                   ))}
                 </View>
               </View>
