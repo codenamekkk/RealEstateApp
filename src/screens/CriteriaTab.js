@@ -1,14 +1,23 @@
 // src/screens/CriteriaTab.js
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View, Text, ScrollView, TouchableOpacity,
-  TextInput, StyleSheet,
+  TextInput, StyleSheet, Keyboard, Platform,
 } from "react-native";
 import { COLORS } from "../constants";
 
 export default function CriteriaTab({ criteria, addCriteria, removeCriteria, toggleHidden, updateCriteria }) {
   const [newName, setNewName] = useState("");
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const hiddenCount = criteria.filter(c => c.hidden).length;
+
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvent, (e) => setKeyboardHeight(e.endCoordinates.height));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   return (
     <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
@@ -95,7 +104,7 @@ export default function CriteriaTab({ criteria, addCriteria, removeCriteria, tog
           <Text style={styles.addBtnText}>추가</Text>
         </TouchableOpacity>
       </View>
-      <View style={{ height: 40 }} />
+      <View style={{ height: 40 + keyboardHeight }} />
     </ScrollView>
   );
 }

@@ -4,7 +4,7 @@ import {
   Modal, View, Text, TouchableOpacity,
   TextInput, StyleSheet, Alert, ScrollView,
   Animated, PanResponder, Dimensions, ActivityIndicator,
-  KeyboardAvoidingView, Platform,
+  Keyboard, Platform,
 } from "react-native";
 import { COLORS } from "../constants";
 
@@ -31,6 +31,15 @@ export default function ShareModal({
   const [nicknameInput, setNicknameInput] = useState("");
 
   const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvent, (e) => setKeyboardHeight(e.endCoordinates.height));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   useEffect(() => {
     if (visible) {
@@ -120,10 +129,6 @@ export default function ShareModal({
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior="padding"
-      >
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={handleClose}>
         <Animated.View
           style={[styles.sheet, { transform: [{ translateY }] }]}
@@ -323,11 +328,11 @@ export default function ShareModal({
                 </View>
               )}
 
+              {keyboardHeight > 0 && <View style={{ height: keyboardHeight }} />}
             </ScrollView>
           </TouchableOpacity>
         </Animated.View>
       </TouchableOpacity>
-      </KeyboardAvoidingView>
     </Modal>
   );
 }
