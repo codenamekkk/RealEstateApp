@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "부동산 매수 평가",
+    "slug": "real-estate-eval",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0d0d14"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0d0d14"
+      },
+      "package": "com.taewon.realestate.eval",
+      "versionCode": 1
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b3800f9b-7083-4105-a156-fc3f6afa0042"
+      }
+    },
+    "plugins": []
+  }
+}
