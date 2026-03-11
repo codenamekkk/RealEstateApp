@@ -4,6 +4,7 @@ import {
   Modal, View, Text, TouchableOpacity,
   TextInput, StyleSheet, Alert, ScrollView,
   Animated, PanResponder, Dimensions, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
 } from "react-native";
 import { COLORS } from "../constants";
 
@@ -111,6 +112,10 @@ export default function ShareModal({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={handleClose}>
         <Animated.View
           style={[styles.sheet, { transform: [{ translateY }] }]}
@@ -314,6 +319,7 @@ export default function ShareModal({
           </TouchableOpacity>
         </Animated.View>
       </TouchableOpacity>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
