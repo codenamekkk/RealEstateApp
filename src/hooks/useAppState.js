@@ -1,77 +1,150 @@
 // src/hooks/useAppState.js
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { io } from "socket.io-client";
 import SERVER_URL from "../api";
 import { DEFAULT_CRITERIA, generateId } from "../constants";
 
 const LOCAL_KEY = "realestate_local_state";
+const USER_KEY = "realestate_user";
 
 export default function useAppState() {
-  const [myId] = useState(() => generateId(6));
+  // ── User identity ──────────────────────────────────────────
+  const [myId, setMyId] = useState(null);
+  const [nickname, setNickname] = useState("");
 
-  // ── Local state ──────────────────────────────────────────────
-  const [localCriteria,   setLocalCriteria]   = useState(DEFAULT_CRITERIA);
+  // ── Local state ────────────────────────────────────────────
+  const [localCriteria, setLocalCriteria] = useState(DEFAULT_CRITERIA);
   const [localProperties, setLocalProperties] = useState([
     { id: 1, name: "매물 1", address: "", scores: {}, memo: "" },
   ]);
 
-  // ── Shared state ─────────────────────────────────────────────
-  const [sharedWith,      setSharedWith]      = useState(null);
-  const [roomCode,        setRoomCode]        = useState(null);
-  const [sharedCriteria,  setSharedCriteria]  = useState(DEFAULT_CRITERIA);
-  const [sharedProperties,setSharedProperties]= useState([
-    { id: 1, name: "매물 1", address: "", scores: {}, memo: "" },
-  ]);
-  const [syncStatus, setSyncStatus] = useState("idle"); // idle|syncing|synced|error
-  const [lastSyncTime, setLastSyncTime] = useState(null);
+  // ── Sharing state ──────────────────────────────────────────
+  const [incomingRequests, setIncomingRequests] = useState([]); // pending requests to me
+  const [sharingList, setSharingList] = useState([]);           // people viewing my data
+  const [receivingList, setReceivingList] = useState([]);       // people whose data I view
 
-  const isSharing   = !!sharedWith;
-  const criteria    = isSharing ? sharedCriteria   : localCriteria;
-  const properties  = isSharing ? sharedProperties : localProperties;
-  const setCriteria = isSharing ? setSharedCriteria   : setLocalCriteria;
-  const setProperties = isSharing ? setSharedProperties : setLocalProperties;
-
-  const socketRef  = useRef(null);
-  const pushTimer  = useRef(null);
+  const socketRef = useRef(null);
+  const pushTimer = useRef(null);
   const nextPropId = useRef(2);
   const nextCritId = useRef(10);
+  const myIdRef = useRef(null);
 
-  // ── Persist local state ──────────────────────────────────────
+  // ── Initialize user ────────────────────────────────────────
   useEffect(() => {
-    AsyncStorage.getItem(LOCAL_KEY).then(raw => {
-      if (!raw) return;
+    (async () => {
+      // Load saved user info
+      const savedUser = await AsyncStorage.getItem(USER_KEY);
+      let userId, userNickname;
+
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        userId = parsed.id;
+        userNickname = parsed.nickname;
+      } else {
+        userId = generateId(6);
+        userNickname = `사용자_${userId.slice(0, 3)}`;
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify({ id: userId, nickname: userNickname }));
+      }
+
+      setMyId(userId);
+      setNickname(userNickname);
+      myIdRef.current = userId;
+
+      // Register on server
       try {
-        const saved = JSON.parse(raw);
-        if (saved.criteria)   setLocalCriteria(saved.criteria);
-        if (saved.properties) setLocalProperties(saved.properties);
-      } catch {}
-    });
+        await fetch(`${SERVER_URL}/api/users`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: userId, nickname: userNickname }),
+        });
+      } catch (e) {
+        console.log("서버 등록 실패 (오프라인?):", e.message);
+      }
+
+      // Load local data
+      const raw = await AsyncStorage.getItem(LOCAL_KEY);
+      if (raw) {
+        try {
+          const saved = JSON.parse(raw);
+          if (saved.criteria) setLocalCriteria(saved.criteria);
+          if (saved.properties) {
+            setLocalProperties(saved.properties);
+            const maxId = saved.properties.reduce((m, p) => Math.max(m, p.id), 0);
+            nextPropId.current = maxId + 1;
+          }
+          if (saved.nextCritId) nextCritId.current = saved.nextCritId;
+        } catch {}
+      }
+
+      // Connect socket
+      connectSocket(userId);
+
+      // Fetch share lists
+      fetchShareLists(userId);
+    })();
+
+    return () => disconnectSocket();
   }, []);
 
+  // ── Persist local state ────────────────────────────────────
   useEffect(() => {
-    if (isSharing) return;
-    AsyncStorage.setItem(LOCAL_KEY, JSON.stringify({ criteria: localCriteria, properties: localProperties }));
-  }, [localCriteria, localProperties, isSharing]);
+    if (!myId) return;
+    AsyncStorage.setItem(LOCAL_KEY, JSON.stringify({
+      criteria: localCriteria,
+      properties: localProperties,
+      nextCritId: nextCritId.current,
+    }));
+  }, [localCriteria, localProperties, myId]);
 
-  // ── Socket helpers ─────────────────────────────────────────
-  function connectSocket() {
-    if (socketRef.current) return socketRef.current;
+  // ── Sync data to server when local data changes ────────────
+  useEffect(() => {
+    if (!myId) return;
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(() => {
+      fetch(`${SERVER_URL}/api/users/${myId}/data`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ criteria: localCriteria, properties: localProperties }),
+      }).catch(() => {});
+    }, 1000);
+  }, [localCriteria, localProperties, myId]);
+
+  // ── Socket ─────────────────────────────────────────────────
+  function connectSocket(userId) {
+    if (socketRef.current) return;
     const socket = io(SERVER_URL, { transports: ["websocket"] });
     socketRef.current = socket;
 
-    socket.on("room-updated", ({ criteria: crit, properties: props, updatedBy }) => {
-      setSharedCriteria(crit);
-      setSharedProperties(props);
-      setLastSyncTime(new Date());
-      setSyncStatus("synced");
+    socket.on("connect", () => {
+      socket.emit("register", userId);
     });
 
-    socket.on("room-closed", () => {
-      handleLeaveRoom();
+    // Someone sent me a share request
+    socket.on("new-share-request", ({ fromId, fromNickname }) => {
+      setIncomingRequests(prev => {
+        if (prev.some(r => r.from_id === fromId)) return prev;
+        return [{ from_id: fromId, from_nickname: fromNickname, status: "pending" }, ...prev];
+      });
     });
 
-    return socket;
+    // My share request was approved/rejected
+    socket.on("share-request-result", ({ requestId, toId, toNickname, status }) => {
+      if (status === "approved") {
+        setReceivingList(prev => {
+          if (prev.some(r => r.to_id === toId)) return prev;
+          return [...prev, { id: requestId, to_id: toId, to_nickname: toNickname }];
+        });
+      }
+      // Refresh lists to get accurate data
+      if (myIdRef.current) fetchShareLists(myIdRef.current);
+    });
+
+    // Shared data updated by someone I'm receiving from
+    socket.on("shared-data-updated", ({ userId: updatedUserId, criteria, properties }) => {
+      // This will be handled by the SharedDataViewer component
+      // We emit a custom event or use a callback
+    });
   }
 
   function disconnectSocket() {
@@ -81,130 +154,141 @@ export default function useAppState() {
     }
   }
 
-  // ── Auto-push when shared state changes ──────────────────────
-  useEffect(() => {
-    if (!isSharing || !roomCode || !socketRef.current) return;
-    if (pushTimer.current) clearTimeout(pushTimer.current);
-    pushTimer.current = setTimeout(() => {
-      setSyncStatus("syncing");
-      socketRef.current.emit("sync-data", {
-        code: roomCode,
-        criteria: sharedCriteria,
-        properties: sharedProperties,
-        updatedBy: myId,
-      });
-      setSyncStatus("synced");
-      setLastSyncTime(new Date());
-    }, 700);
-  }, [sharedCriteria, sharedProperties]);
-
-  useEffect(() => () => disconnectSocket(), []);
-
-  // ── Room actions ─────────────────────────────────────────────
-  async function handleCreateRoom(targetId) {
+  // ── Fetch share lists from server ──────────────────────────
+  async function fetchShareLists(userId) {
     try {
-      const initCrit  = JSON.parse(JSON.stringify(localCriteria));
-      const initProps = JSON.parse(JSON.stringify(localProperties));
+      const [inRes, sharingRes, receivingRes] = await Promise.all([
+        fetch(`${SERVER_URL}/api/share-requests/incoming/${userId}`),
+        fetch(`${SERVER_URL}/api/shares/sharing/${userId}`),
+        fetch(`${SERVER_URL}/api/shares/receiving/${userId}`),
+      ]);
+      const incoming = await inRes.json();
+      const sharing = await sharingRes.json();
+      const receiving = await receivingRes.json();
 
-      const res = await fetch(`${SERVER_URL}/api/rooms`, {
+      setIncomingRequests(incoming);
+      setSharingList(sharing);
+      setReceivingList(receiving);
+    } catch (e) {
+      console.log("공유 목록 조회 실패:", e.message);
+    }
+  }
+
+  // ── Share actions ──────────────────────────────────────────
+  async function sendShareRequest(targetId) {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/share-requests`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          creatorId: myId,
-          partnerId: targetId,
-          criteria: initCrit,
-          properties: initProps,
-        }),
+        body: JSON.stringify({ fromId: myId, toId: targetId }),
       });
-      const { code } = await res.json();
-
-      setRoomCode(code);
-      setSharedWith(targetId);
-      setSharedCriteria(initCrit);
-      setSharedProperties(initProps);
-
-      const socket = connectSocket();
-      socket.emit("join-room", code);
-    } catch (e) {
-      console.error("방 생성 실패:", e);
-    }
-  }
-
-  async function handleJoinRoom(code) {
-    try {
-      const res = await fetch(`${SERVER_URL}/api/rooms/${code}`);
-      if (!res.ok) return false;
-
       const data = await res.json();
-      setRoomCode(code);
-      setSharedWith(data.creatorId || "상대방");
-      setSharedCriteria(data.criteria);
-      setSharedProperties(data.properties);
-
-      const socket = connectSocket();
-      socket.emit("join-room", code);
-      return true;
+      if (!res.ok) return { ok: false, error: data.error };
+      return { ok: true, targetNickname: data.targetNickname };
     } catch (e) {
-      console.error("방 입장 실패:", e);
-      return false;
+      return { ok: false, error: "서버 연결 실패" };
     }
   }
 
-  function handleLeaveRoom() {
-    if (socketRef.current && roomCode) {
-      socketRef.current.emit("leave-room", roomCode);
+  async function respondShareRequest(requestId, status) {
+    try {
+      await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      // Refresh lists
+      await fetchShareLists(myId);
+    } catch (e) {
+      console.log("공유 응답 실패:", e.message);
     }
-    disconnectSocket();
-    // 공유 중 변경 내용을 로컬에 반영
-    setLocalCriteria(JSON.parse(JSON.stringify(sharedCriteria)));
-    setLocalProperties(JSON.parse(JSON.stringify(sharedProperties)));
-    setSharedWith(null);
-    setRoomCode(null);
-    setSyncStatus("idle");
   }
 
-  // ── Data mutations ────────────────────────────────────────────
+  async function removeShare(requestId) {
+    try {
+      await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
+        method: "DELETE",
+      });
+      await fetchShareLists(myId);
+    } catch (e) {
+      console.log("공유 삭제 실패:", e.message);
+    }
+  }
+
+  async function fetchSharedData(targetId) {
+    try {
+      const res = await fetch(
+        `${SERVER_URL}/api/users/${targetId}/shared-data?requesterId=${myId}`
+      );
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async function updateNickname(newNickname) {
+    setNickname(newNickname);
+    await AsyncStorage.setItem(USER_KEY, JSON.stringify({ id: myId, nickname: newNickname }));
+    try {
+      await fetch(`${SERVER_URL}/api/users/${myId}/nickname`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname: newNickname }),
+      });
+    } catch {}
+  }
+
+  const refreshShareLists = useCallback(() => {
+    if (myId) fetchShareLists(myId);
+  }, [myId]);
+
+  // ── Data mutations ─────────────────────────────────────────
   function setScore(propId, critId, val) {
-    setProperties(ps => ps.map(p =>
+    setLocalProperties(ps => ps.map(p =>
       p.id === propId ? { ...p, scores: { ...p.scores, [critId]: val } } : p
     ));
   }
 
   function addProperty() {
     const id = nextPropId.current++;
-    setProperties(ps => [...ps, { id, name: `매물 ${id}`, address: "", scores: {}, memo: "" }]);
+    setLocalProperties(ps => [...ps, { id, name: `매물 ${id}`, address: "", scores: {}, memo: "" }]);
     return id;
   }
 
   function removeProperty(id, currentSelectedId) {
-    const remaining = properties.filter(p => p.id !== id);
-    setProperties(remaining);
+    const remaining = localProperties.filter(p => p.id !== id);
+    setLocalProperties(remaining);
     return currentSelectedId === id && remaining.length > 0 ? remaining[0].id : currentSelectedId;
   }
 
   function updateProp(id, field, val) {
-    setProperties(ps => ps.map(p => p.id === id ? { ...p, [field]: val } : p));
+    setLocalProperties(ps => ps.map(p => p.id === id ? { ...p, [field]: val } : p));
   }
 
   function addCriteria(name) {
     if (!name.trim()) return;
-    setCriteria(cs => [...cs, {
+    setLocalCriteria(cs => [...cs, {
       id: nextCritId.current++, name: name.trim(),
       weight: 3, description: "", hidden: false,
     }]);
   }
 
-  function removeCriteria(id) { setCriteria(cs => cs.filter(c => c.id !== id)); }
-  function toggleHidden(id)   { setCriteria(cs => cs.map(c => c.id === id ? { ...c, hidden: !c.hidden } : c)); }
+  function removeCriteria(id) { setLocalCriteria(cs => cs.filter(c => c.id !== id)); }
+  function toggleHidden(id) { setLocalCriteria(cs => cs.map(c => c.id === id ? { ...c, hidden: !c.hidden } : c)); }
   function updateCriteria(id, field, val) {
-    setCriteria(cs => cs.map(c => c.id === id ? { ...c, [field]: val } : c));
+    setLocalCriteria(cs => cs.map(c => c.id === id ? { ...c, [field]: val } : c));
   }
 
   return {
-    myId,
-    criteria, properties,
-    isSharing, sharedWith, roomCode, syncStatus, lastSyncTime,
-    handleCreateRoom, handleJoinRoom, handleLeaveRoom,
+    myId, nickname, updateNickname,
+    criteria: localCriteria,
+    properties: localProperties,
+    // Share state
+    incomingRequests, sharingList, receivingList,
+    sendShareRequest, respondShareRequest, removeShare,
+    fetchSharedData, refreshShareLists,
+    // Data mutations
     setScore, addProperty, removeProperty, updateProp,
     addCriteria, removeCriteria, toggleHidden, updateCriteria,
   };
