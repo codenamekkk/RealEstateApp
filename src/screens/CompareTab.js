@@ -37,9 +37,13 @@ function PropertyCard({ property, criteria, onPress, rank }) {
 
 export default function CompareTab({ criteria, properties, onGoToScore }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
-  const sorted = [...properties].sort((a, b) =>
-    calcScore(b, activeCriteria).percent - calcScore(a, activeCriteria).percent
-  );
+  const sorted = [...properties].sort((a, b) => {
+    const diff = calcScore(b, activeCriteria).percent - calcScore(a, activeCriteria).percent;
+    if (diff !== 0) return diff;
+    const priceA = Number(a.price) || Infinity;
+    const priceB = Number(b.price) || Infinity;
+    return priceA - priceB;
+  });
 
   if (properties.length < 2) {
     return (

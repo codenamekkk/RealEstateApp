@@ -57,9 +57,13 @@ export default function SharedDataViewer({ targetId, targetNickname, fetchShared
 
   const { criteria, properties } = data;
   const activeCriteria = criteria.filter(c => !c.hidden);
-  const sorted = [...properties].sort((a, b) =>
-    calcScore(b, activeCriteria).percent - calcScore(a, activeCriteria).percent
-  );
+  const sorted = [...properties].sort((a, b) => {
+    const diff = calcScore(b, activeCriteria).percent - calcScore(a, activeCriteria).percent;
+    if (diff !== 0) return diff;
+    const priceA = Number(a.price) || Infinity;
+    const priceB = Number(b.price) || Infinity;
+    return priceA - priceB;
+  });
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>

@@ -92,6 +92,14 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               placeholderTextColor={COLORS.textFaint}
               style={styles.addressInput}
             />
+            <TextInput
+              value={selectedProp.price || ""}
+              onChangeText={v => updateProp(selectedProp.id, "price", v)}
+              placeholder="매매가 (만원)"
+              placeholderTextColor={COLORS.textFaint}
+              keyboardType="numeric"
+              style={styles.priceInput}
+            />
           </View>
 
           {/* Score summary */}
@@ -127,7 +135,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     </View>
                     {c.description ? <Text style={styles.criteriaDesc}>{c.description}</Text> : null}
                   </View>
-                  {score > 0 && label ? <Text style={[styles.scoreLabel, { color }]}>{label}</Text> : null}
+                  {score > 0 && label ? <Text style={[styles.scoreLabel, { color }]} numberOfLines={1}>{label}</Text> : null}
                 </View>
                 <View style={styles.scoreRow}>
                   {SCORE_VALUES.map(v => (
@@ -174,6 +182,7 @@ const styles = StyleSheet.create({
   card:        { backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, padding: 16, marginBottom: 16 },
   nameInput:   { flex: 1, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, color: COLORS.text, fontSize: 14, fontWeight: "700" },
   addressInput: { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12 },
+  priceInput:  { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12, marginTop: 6 },
   deleteBtn:   { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", backgroundColor: "rgba(239,68,68,0.08)" },
   summaryCard: { borderWidth: 1, borderRadius: 16, padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   summaryLabel: { fontSize: 12, color: COLORS.textFaint, marginBottom: 2 },
@@ -187,6 +196,6 @@ const styles = StyleSheet.create({
   scoreLabel:     { fontSize: 11, fontWeight: "700" },
   weightBadge:    { backgroundColor: COLORS.primarySoft, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 1 },
   weightBadgeText: { color: "#818cf8", fontSize: 10, fontWeight: "700" },
-  scoreRow:    { flexDirection: "row", gap: 4, alignItems: "center" },
+  scoreRow:    { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   memoInput:   { backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, padding: 14, color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlignVertical: "top" },
 });

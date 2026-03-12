@@ -16,7 +16,7 @@ export default function useAppState() {
   // ── Local state ────────────────────────────────────────────
   const [localCriteria, setLocalCriteria] = useState(DEFAULT_CRITERIA);
   const [localProperties, setLocalProperties] = useState([
-    { id: 1, name: "매물 1", address: "", scores: {}, memo: "" },
+    { id: 1, name: "매물 1", address: "", price: "", scores: {}, memo: "" },
   ]);
 
   // ── Sharing state ──────────────────────────────────────────
@@ -262,7 +262,7 @@ export default function useAppState() {
 
   function addProperty() {
     const id = nextPropId.current++;
-    setLocalProperties(ps => [...ps, { id, name: `매물 ${id}`, address: "", scores: {}, memo: "" }]);
+    setLocalProperties(ps => [...ps, { id, name: `매물 ${id}`, address: "", price: "", scores: {}, memo: "" }]);
     return id;
   }
 

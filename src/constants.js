@@ -27,7 +27,8 @@ export function getScoreColor(score) {
 
 export function getScoreLabel(score) {
   if (score % 1 === 0) return SCORE_LABELS[score] || "";
-  return "";
+  const HALF_LABELS = { 1.5: "나쁨에 가까움", 2.5: "보통에 가까움", 3.5: "좋음에 가까움", 4.5: "매우 좋음에 가까움" };
+  return HALF_LABELS[score] || "";
 }
 
 export const COLORS = {
