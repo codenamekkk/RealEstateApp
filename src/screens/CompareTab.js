@@ -75,11 +75,11 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
         <View style={{ flexDirection: "row" }}>
           {/* Fixed left label column */}
           <View style={styles.tableLabelColumn}>
-            <View style={[styles.tableLabelCellBox, styles.tableHeader]}>
+            <View style={[styles.tableLabelCellBox, styles.tableHeader, styles.tableRowHeight]}>
               <Text style={{ color: COLORS.textFaint, fontSize: 12, fontWeight: "700" }}>항목</Text>
             </View>
             {activeCriteria.map(c => (
-              <View key={c.id} style={styles.tableLabelCellBox}>
+              <View key={c.id} style={[styles.tableLabelCellBox, styles.tableDataRowHeight]}>
                 <Text style={{ fontSize: 12, color: COLORS.textMuted }}>{c.name}</Text>
                 <Text style={{ fontSize: 10, color: COLORS.textFaint }}>중요도 {c.weight}</Text>
               </View>
@@ -87,10 +87,10 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
           </View>
 
           {/* Scrollable score columns */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ flex: 1 }}>
-            <View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+            <View style={{ flex: 1 }}>
               {/* Header row */}
-              <View style={[styles.tableScoreRow, styles.tableHeader]}>
+              <View style={[styles.tableScoreRow, styles.tableHeader, styles.tableRowHeight]}>
                 {sorted.map(p => (
                   <Text key={p.id} style={[styles.tableCell, styles.tableScoreCell, { color: "#818cf8" }]}>
                     {(p.name || "").length > 4 ? (p.name || "").slice(0, 4) + ".." : p.name}
@@ -102,7 +102,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
                 const scores  = sorted.map(p => p.scores[c.id] || 0);
                 const maxScore = Math.max(...scores);
                 return (
-                  <View key={c.id} style={styles.tableScoreRow}>
+                  <View key={c.id} style={[styles.tableScoreRow, styles.tableDataRowHeight]}>
                     {scores.map((s, i) => {
                       const isTop = s === maxScore && scores.filter(x => x === maxScore).length === 1 && maxScore > 0;
                       return (
@@ -151,9 +151,11 @@ const styles = StyleSheet.create({
   percentText:     { fontSize: 16, fontWeight: "800" },
   table:             { backgroundColor: "rgba(255,255,255,0.02)", borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, overflow: "hidden" },
   tableLabelColumn:  { width: 100, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.06)" },
-  tableLabelCellBox: { paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)", justifyContent: "center" },
+  tableLabelCellBox: { paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)", justifyContent: "center" },
   tableScoreRow:     { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)" },
+  tableRowHeight:    { height: 38 },
+  tableDataRowHeight: { height: 44 },
   tableHeader:       { backgroundColor: "rgba(255,255,255,0.05)" },
   tableCell:         { alignItems: "center", justifyContent: "center" },
-  tableScoreCell:    { width: 60, alignItems: "center", paddingVertical: 10 },
+  tableScoreCell:    { flex: 1, minWidth: 50, alignItems: "center", justifyContent: "center", textAlign: "center", textAlignVertical: "center" },
 });
