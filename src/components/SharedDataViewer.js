@@ -97,6 +97,7 @@ export default function SharedDataViewer({ targetId, targetNickname, fetchShared
                     <View style={{ flex: 1 }}>
                       <Text style={styles.propName}>{p.name || "이름 없음"}</Text>
                       {p.address ? <Text style={styles.propAddr}>{p.address}</Text> : null}
+                      {p.price ? <Text style={styles.propPrice}>{Number(p.price).toLocaleString()}원</Text> : null}
                     </View>
                     <View style={[styles.gradeBadge, { backgroundColor: grade.color + "22" }]}>
                       <Text style={[styles.gradeBadgeText, { color: grade.color }]}>
@@ -122,39 +123,53 @@ export default function SharedDataViewer({ targetId, targetNickname, fetchShared
               <>
                 <Text style={[styles.sectionTitle, { marginTop: 24 }]}>📋 항목별 상세 비교</Text>
                 <View style={styles.table}>
-                  <View style={[styles.tableRow, styles.tableHeader]}>
-                    <Text style={[styles.tableCell, styles.tableLabelCell, { color: COLORS.textFaint }]}>항목</Text>
-                    {sorted.map(p => (
-                      <Text key={p.id} style={[styles.tableCell, styles.tableScoreCell, { color: "#818cf8" }]}>
-                        {(p.name || "").length > 4 ? (p.name || "").slice(0, 4) + ".." : p.name}
-                      </Text>
-                    ))}
-                  </View>
-
-                  {activeCriteria.map(c => {
-                    const scores = sorted.map(p => p.scores[c.id] || 0);
-                    const maxScore = Math.max(...scores);
-                    return (
-                      <View key={c.id} style={styles.tableRow}>
-                        <View style={[styles.tableCell, styles.tableLabelCell]}>
+                  <View style={{ flexDirection: "row" }}>
+                    {/* Fixed left label column */}
+                    <View style={styles.tableLabelColumn}>
+                      <View style={[styles.tableLabelCellBox, styles.tableHeader]}>
+                        <Text style={{ color: COLORS.textFaint, fontSize: 12, fontWeight: "700" }}>항목</Text>
+                      </View>
+                      {activeCriteria.map(c => (
+                        <View key={c.id} style={styles.tableLabelCellBox}>
                           <Text style={{ fontSize: 12, color: COLORS.textMuted }}>{c.name}</Text>
                           <Text style={{ fontSize: 10, color: COLORS.textFaint }}>중요도 {c.weight}</Text>
                         </View>
-                        {scores.map((s, i) => {
-                          const isTop = s === maxScore && scores.filter(x => x === maxScore).length === 1 && maxScore > 0;
+                      ))}
+                    </View>
+
+                    {/* Scrollable score columns */}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ flex: 1 }}>
+                      <View>
+                        <View style={[styles.tableScoreRow, styles.tableHeader]}>
+                          {sorted.map(p => (
+                            <Text key={p.id} style={[styles.tableCell, styles.tableScoreCell, { color: "#818cf8" }]}>
+                              {(p.name || "").length > 4 ? (p.name || "").slice(0, 4) + ".." : p.name}
+                            </Text>
+                          ))}
+                        </View>
+                        {activeCriteria.map(c => {
+                          const scores = sorted.map(p => p.scores[c.id] || 0);
+                          const maxScore = Math.max(...scores);
                           return (
-                            <View key={i} style={[styles.tableCell, styles.tableScoreCell]}>
-                              {s > 0
-                                ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? getScoreColor(s) : "#64748b" }}>
-                                    {s}{isTop ? "★" : ""}
-                                  </Text>
-                                : <Text style={{ color: "#374151", fontSize: 12 }}>-</Text>}
+                            <View key={c.id} style={styles.tableScoreRow}>
+                              {scores.map((s, i) => {
+                                const isTop = s === maxScore && scores.filter(x => x === maxScore).length === 1 && maxScore > 0;
+                                return (
+                                  <View key={i} style={[styles.tableCell, styles.tableScoreCell]}>
+                                    {s > 0
+                                      ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? getScoreColor(s) : "#64748b" }}>
+                                          {s}{isTop ? "★" : ""}
+                                        </Text>
+                                      : <Text style={{ color: "#374151", fontSize: 12 }}>-</Text>}
+                                  </View>
+                                );
+                              })}
                             </View>
                           );
                         })}
                       </View>
-                    );
-                  })}
+                    </ScrollView>
+                  </View>
                 </View>
               </>
             )}
@@ -210,6 +225,7 @@ const styles = StyleSheet.create({
   rankNum: { fontSize: 16, fontWeight: "900", width: 32, textAlign: "center", color: COLORS.textFaint },
   propName: { fontSize: 15, fontWeight: "700", color: COLORS.text },
   propAddr: { fontSize: 12, color: COLORS.textFaint, marginTop: 2 },
+  propPrice: { fontSize: 12, color: "#818cf8", fontWeight: "700", marginTop: 2 },
   gradeBadge: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 3 },
   gradeBadgeText: { fontSize: 11, fontWeight: "700" },
   barBg: { height: 6, backgroundColor: "#1e1e2e", borderRadius: 10, overflow: "hidden" },
@@ -217,10 +233,11 @@ const styles = StyleSheet.create({
   subText: { fontSize: 11, color: COLORS.textFaint },
   percentText: { fontSize: 16, fontWeight: "800" },
 
-  table: { backgroundColor: "rgba(255,255,255,0.02)", borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, overflow: "hidden" },
-  tableRow: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)", paddingHorizontal: 14, paddingVertical: 10, alignItems: "center" },
-  tableHeader: { backgroundColor: "rgba(255,255,255,0.05)" },
-  tableCell: { alignItems: "center", justifyContent: "center" },
-  tableLabelCell: { flex: 1 },
-  tableScoreCell: { width: 60, alignItems: "center" },
+  table:             { backgroundColor: "rgba(255,255,255,0.02)", borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, overflow: "hidden" },
+  tableLabelColumn:  { width: 100, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.06)" },
+  tableLabelCellBox: { paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)", justifyContent: "center" },
+  tableScoreRow:     { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)" },
+  tableHeader:       { backgroundColor: "rgba(255,255,255,0.05)" },
+  tableCell:         { alignItems: "center", justifyContent: "center" },
+  tableScoreCell:    { width: 60, alignItems: "center", paddingVertical: 10 },
 });

@@ -92,14 +92,22 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               placeholderTextColor={COLORS.textFaint}
               style={styles.addressInput}
             />
-            <TextInput
-              value={selectedProp.price || ""}
-              onChangeText={v => updateProp(selectedProp.id, "price", v)}
-              placeholder="매매가 (만원)"
-              placeholderTextColor={COLORS.textFaint}
-              keyboardType="numeric"
-              style={styles.priceInput}
-            />
+            <View style={styles.priceRow}>
+              <TextInput
+                value={selectedProp.price ? Number(selectedProp.price).toLocaleString() : ""}
+                onChangeText={v => {
+                  const digits = v.replace(/[^0-9]/g, "");
+                  updateProp(selectedProp.id, "price", digits);
+                }}
+                placeholder="매매가 (원)"
+                placeholderTextColor={COLORS.textFaint}
+                keyboardType="numeric"
+                style={[styles.priceInput, { flex: 1 }]}
+              />
+              {selectedProp.price ? (
+                <Text style={styles.priceUnit}>원</Text>
+              ) : null}
+            </View>
           </View>
 
           {/* Score summary */}
@@ -182,7 +190,9 @@ const styles = StyleSheet.create({
   card:        { backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, padding: 16, marginBottom: 16 },
   nameInput:   { flex: 1, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, color: COLORS.text, fontSize: 14, fontWeight: "700" },
   addressInput: { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12 },
-  priceInput:  { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12, marginTop: 6 },
+  priceRow:    { flexDirection: "row", alignItems: "center", marginTop: 6 },
+  priceInput:  { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12 },
+  priceUnit:   { color: COLORS.textFaint, fontSize: 12, fontWeight: "700", marginLeft: 6 },
   deleteBtn:   { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", backgroundColor: "rgba(239,68,68,0.08)" },
   summaryCard: { borderWidth: 1, borderRadius: 16, padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   summaryLabel: { fontSize: 12, color: COLORS.textFaint, marginBottom: 2 },
