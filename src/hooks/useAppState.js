@@ -29,6 +29,7 @@ export default function useAppState() {
   const nextPropId = useRef(2);
   const nextCritId = useRef(10);
   const myIdRef = useRef(null);
+  const initialLoadDone = useRef(false);
 
   // ── Initialize user ────────────────────────────────────────
   useEffect(() => {
@@ -83,6 +84,8 @@ export default function useAppState() {
         } catch {}
       }
 
+      initialLoadDone.current = true;
+
       // Connect socket
       connectSocket(userId);
 
@@ -95,17 +98,17 @@ export default function useAppState() {
 
   // ── Persist local state ────────────────────────────────────
   useEffect(() => {
-    if (!myId) return;
+    if (!myId || !initialLoadDone.current) return;
     AsyncStorage.setItem(LOCAL_KEY, JSON.stringify({
       criteria: localCriteria,
       properties: localProperties,
       nextCritId: nextCritId.current,
-    }));
+    })).catch(e => console.warn("로컬 데이터 저장 실패:", e.message));
   }, [localCriteria, localProperties, myId]);
 
   // ── Sync data to server when local data changes ────────────
   useEffect(() => {
-    if (!myId) return;
+    if (!myId || !initialLoadDone.current) return;
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => {
       fetch(`${SERVER_URL}/api/users/${myId}/data`, {
