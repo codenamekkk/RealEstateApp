@@ -4,7 +4,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, StatusBar,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import PagerView from "react-native-pager-view";
+import TabPager from "./src/components/TabPager";
 import { COLORS } from "./src/constants";
 import useAppState from "./src/hooks/useAppState";
 import ScoreTab    from "./src/screens/ScoreTab";
@@ -143,10 +143,9 @@ function App() {
       </View>
 
       {/* ── Swipeable Screens ── */}
-      <PagerView
+      <TabPager
         ref={pagerRef}
         style={{ flex: 1 }}
-        initialPage={0}
         onPageSelected={handlePageSelected}
       >
         <View key="score" style={{ flex: 1 }}>
@@ -175,7 +174,7 @@ function App() {
             updateCriteria={updateCriteria}
           />
         </View>
-      </PagerView>
+      </TabPager>
 
       {/* ── Share Modal ── */}
       <ShareModal
