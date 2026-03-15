@@ -96,12 +96,25 @@ if (regionCount.cnt === 0) {
   }
 }
 
+// ── 법정동코드 (동 레벨) 테이블 ────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dong_codes (
+    sigungu_cd  TEXT NOT NULL,
+    bjdong_cd   TEXT NOT NULL,
+    dong_nm     TEXT NOT NULL,
+    PRIMARY KEY(sigungu_cd, bjdong_cd)
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dong_codes_nm ON dong_codes(sigungu_cd, dong_nm)`);
+
 // ── API 키 ───────────────────────────────────────────────────────
 const KREB_API_KEY = process.env.KREB_API_KEY || "";
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
+const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
 
 if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
+if (!BUILDING_API_KEY) console.warn("⚠️ BUILDING_API_KEY 환경변수가 설정되지 않았습니다");
 
 // ── Express + Socket.io ─────────────────────────────────────────
 const app = express();
@@ -623,6 +636,248 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
   } catch (e) {
     console.error("지역 분석 실패:", e.message);
     res.status(500).json({ error: "지역 분석 실패" });
+  }
+});
+
+// ── 건축물대장 API (Building Registry) ──────────────────────────────
+
+const BUILDING_API_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService";
+
+/**
+ * 주소 파싱: KREB 주소에서 동이름, 번지를 추출
+ * 예: "서울특별시 동대문구 청량리동 60" → { dongNm: "청량리동", bun: "0060", ji: "0000" }
+ * 예: "서울특별시 동대문구 청량리동 60-5" → { dongNm: "청량리동", bun: "0060", ji: "0005" }
+ */
+function parseKrebAddress(address) {
+  const parts = address.trim().split(/\s+/);
+  let dongNm = "";
+  let bunJi = "";
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (/[동읍면리가로]$/.test(part) && part.length >= 2) {
+      dongNm = part;
+      // 번지는 동이름 다음에 오는 숫자(들)
+      if (i + 1 < parts.length) {
+        bunJi = parts.slice(i + 1).join(" ");
+      }
+      break;
+    }
+  }
+
+  let bun = "0000";
+  let ji = "0000";
+
+  if (bunJi) {
+    const match = bunJi.match(/^(\d+)(?:-(\d+))?/);
+    if (match) {
+      bun = String(match[1]).padStart(4, "0");
+      ji = match[2] ? String(match[2]).padStart(4, "0") : "0000";
+    }
+  }
+
+  return { dongNm, bun, ji };
+}
+
+/**
+ * 법정동코드 조회: 동이름으로 bjdongCd 조회
+ * 1. 먼저 dong_codes 테이블에서 캐시 확인
+ * 2. 없으면 행정표준코드 API로 조회 후 캐시
+ */
+async function resolveBjdongCd(sigunguCd, dongNm) {
+  // 1. 캐시 확인
+  const cached = db.prepare(
+    "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm = ?"
+  ).get(sigunguCd, dongNm);
+  if (cached) return cached.bjdong_cd;
+
+  // 2. 행정표준코드관리시스템 API로 조회
+  try {
+    const url = `https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList?serviceKey=${BUILDING_API_KEY}&pageNo=1&numOfRows=100&type=json&locatadd_nm=${encodeURIComponent(dongNm)}`;
+    console.log("[DONG] 법정동코드 조회:", dongNm);
+    const res = await fetch(url, { timeout: 10000 });
+    const data = await res.json();
+
+    const items = data?.StanReginCd?.[1]?.row;
+    if (!items || items.length === 0) {
+      console.log("[DONG] 법정동코드 결과 없음");
+      return null;
+    }
+
+    // sigunguCd와 매칭되는 항목 찾기
+    const insertDong = db.prepare(
+      "INSERT OR IGNORE INTO dong_codes (sigungu_cd, bjdong_cd, dong_nm) VALUES (?, ?, ?)"
+    );
+    const tx = db.transaction(() => {
+      for (const item of items) {
+        const fullCode = item.region_cd; // 10자리 법정동코드
+        if (!fullCode || fullCode.length < 10) continue;
+        const itemSigungu = fullCode.substring(0, 5);
+        const itemBjdong = fullCode.substring(5, 10);
+        const itemDongNm = item.locatjumin_nm || item.locallow_nm || "";
+        if (itemDongNm) {
+          insertDong.run(itemSigungu, itemBjdong, itemDongNm);
+        }
+      }
+    });
+    tx();
+
+    // 다시 캐시에서 확인
+    const result = db.prepare(
+      "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm = ?"
+    ).get(sigunguCd, dongNm);
+    if (result) return result.bjdong_cd;
+
+    // 부분 매칭 시도 (동이름에서 '동' 제거 후 LIKE 검색)
+    const baseName = dongNm.replace(/[동읍면리가로]$/, "");
+    const likeResult = db.prepare(
+      "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm LIKE ?"
+    ).get(sigunguCd, `${baseName}%`);
+    if (likeResult) return likeResult.bjdong_cd;
+
+    return null;
+  } catch (e) {
+    console.error("[DONG] 법정동코드 조회 실패:", e.message);
+    return null;
+  }
+}
+
+/**
+ * 건축물대장 표제부 조회
+ */
+async function fetchBuildingTitle(sigunguCd, bjdongCd, bun, ji) {
+  const url = `${BUILDING_API_BASE}/getBrTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1&_type=json`;
+  console.log("[BUILDING] 표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
+  const res = await fetch(url, { timeout: 15000 });
+  const data = await res.json();
+  const items = data?.response?.body?.items?.item;
+  if (!items) return [];
+  return Array.isArray(items) ? items : [items];
+}
+
+/**
+ * 건축물대장 전유공용면적 조회
+ */
+async function fetchBuildingArea(sigunguCd, bjdongCd, bun, ji) {
+  const url = `${BUILDING_API_BASE}/getBrExposPubuseAreaInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=500&pageNo=1&_type=json`;
+  console.log("[BUILDING] 전유면적 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
+  const res = await fetch(url, { timeout: 15000 });
+  const data = await res.json();
+  const items = data?.response?.body?.items?.item;
+  if (!items) return [];
+  return Array.isArray(items) ? items : [items];
+}
+
+// ── 건축물대장 단지 정보 조회 엔드포인트 ─────────────────────────────
+app.get("/api/apartment/complex-info", async (req, res) => {
+  const { lawdCd, address } = req.query;
+  if (!lawdCd || !address) return res.status(400).json({ error: "lawdCd, address 필수" });
+  if (!BUILDING_API_KEY) return res.status(503).json({ error: "건축물대장 API 키 미설정" });
+
+  try {
+    const { dongNm, bun, ji } = parseKrebAddress(address);
+    if (!dongNm) {
+      return res.status(400).json({ error: "주소에서 동 이름을 찾을 수 없습니다" });
+    }
+
+    console.log(`[COMPLEX] 파싱 결과: dongNm=${dongNm}, bun=${bun}, ji=${ji}, lawdCd=${lawdCd}`);
+
+    // bjdongCd 조회
+    const bjdongCd = await resolveBjdongCd(lawdCd, dongNm);
+    if (!bjdongCd) {
+      return res.status(404).json({ error: `법정동코드를 찾을 수 없습니다: ${dongNm}` });
+    }
+
+    console.log(`[COMPLEX] bjdongCd 확인: ${bjdongCd}`);
+
+    // 표제부 + 전유면적 동시 조회
+    const [titleItems, areaItems] = await Promise.all([
+      fetchBuildingTitle(lawdCd, bjdongCd, bun, ji),
+      fetchBuildingArea(lawdCd, bjdongCd, bun, ji),
+    ]);
+
+    if (titleItems.length === 0) {
+      return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
+    }
+
+    // 표제부에서 단지 전체 정보 합산
+    let maxFloor = 0;
+    let maxUgrndFloor = 0;
+    let totalHhld = 0;
+    let totalPkng = 0;
+    let bcRat = 0;
+    let vlRat = 0;
+    let useAprDay = "";
+    let totArea = 0;
+    const buildingNames = [];
+
+    for (const item of titleItems) {
+      const grndFlr = parseInt(item.grndFlrCnt) || 0;
+      const ugrndFlr = parseInt(item.ugrndFlrCnt) || 0;
+      const hhld = parseInt(item.hhldCnt) || 0;
+      const pkng = parseInt(item.totPkngCnt) || 0;
+
+      if (grndFlr > maxFloor) maxFloor = grndFlr;
+      if (ugrndFlr > maxUgrndFloor) maxUgrndFloor = ugrndFlr;
+      totalHhld += hhld;
+      totalPkng += pkng;
+
+      // 용적률/건폐율은 보통 단지 전체에서 동일하므로 최초값 사용
+      if (!bcRat && item.bcRat) bcRat = parseFloat(item.bcRat) || 0;
+      if (!vlRat && item.vlRat) vlRat = parseFloat(item.vlRat) || 0;
+      if (!useAprDay && item.useAprDay) useAprDay = String(item.useAprDay);
+      if (item.totArea) totArea += parseFloat(item.totArea) || 0;
+
+      if (item.bldNm) buildingNames.push(item.bldNm);
+    }
+
+    // 전유면적에서 고유 면적 목록 추출 (전유 타입만)
+    const exclusiveAreas = new Set();
+    for (const item of areaItems) {
+      const gbNm = String(item.exposPubuseGbCdNm || "").trim();
+      if (gbNm === "전유") {
+        const area = parseFloat(item.area);
+        if (area && area > 10) { // 10㎡ 이하 무시 (창고 등)
+          exclusiveAreas.add(Math.round(area * 100) / 100);
+        }
+      }
+    }
+
+    // 면적 정렬 및 평수 변환
+    const areaList = [...exclusiveAreas].sort((a, b) => a - b).map(a => ({
+      area: a,
+      areaPyeong: Math.round(a / 3.3058),
+    }));
+
+    // 사용승인일 포맷
+    let useAprDate = "";
+    if (useAprDay && useAprDay.length >= 8) {
+      useAprDate = `${useAprDay.substring(0, 4)}.${useAprDay.substring(4, 6)}.${useAprDay.substring(6, 8)}`;
+    }
+
+    // 세대당 주차대수
+    const parkingPerUnit = totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0;
+
+    const result = {
+      buildingCount: titleItems.length,
+      buildingNames,
+      maxFloor,
+      maxUgrndFloor,
+      totalHouseholds: totalHhld,
+      totalParking: totalPkng,
+      parkingPerUnit,
+      bcRat: Math.round(bcRat * 100) / 100,
+      vlRat: Math.round(vlRat * 100) / 100,
+      useAprDate,
+      totArea: Math.round(totArea * 100) / 100,
+      exclusiveAreas: areaList,
+    };
+
+    console.log(`[COMPLEX] 결과: ${titleItems.length}개동, 최고${maxFloor}층, 용적률${vlRat}%`);
+    res.json(result);
+  } catch (e) {
+    console.error("건축물대장 조회 실패:", e.message, e.stack);
+    res.status(500).json({ error: "건축물대장 조회 실패", detail: e.message });
   }
 });
 

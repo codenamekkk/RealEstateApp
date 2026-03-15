@@ -34,3 +34,12 @@ export async function getRegionalAnalysis(lawdCd, umdNm, area, price) {
   if (!res.ok) throw new Error("시세 분석 실패");
   return res.json();
 }
+
+export async function getComplexInfo(lawdCd, address) {
+  const res = await fetch(`${SERVER_URL}/api/apartment/complex-info?lawdCd=${lawdCd}&address=${encodeURIComponent(address)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "단지 정보 조회 실패");
+  }
+  return res.json();
+}

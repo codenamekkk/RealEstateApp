@@ -5,7 +5,7 @@ import {
   TextInput, StyleSheet, ActivityIndicator, FlatList,
 } from "react-native";
 import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice, sqmToPyeong } from "../constants";
-import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRegionalAnalysis } from "../services/apartmentApi";
+import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRegionalAnalysis, getComplexInfo } from "../services/apartmentApi";
 
 function ScoreButton({ value, selected, onPress, color }) {
   const isHalf = value % 1 !== 0;
@@ -46,6 +46,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [transactionLoading, setTransactionLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [dataCollecting, setDataCollecting] = useState(false);
+  const [complexInfoLoading, setComplexInfoLoading] = useState(false);
 
   // 매물 변경 시 상태 리셋
   useEffect(() => {
@@ -66,6 +67,19 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear);
       setAreas(areasData);
     } catch { setAreas([]); }
+  }
+
+  async function loadComplexInfo(lawdCd, address) {
+    setComplexInfoLoading(true);
+    try {
+      const info = await getComplexInfo(lawdCd, address);
+      updateProp(selectedProp.id, "complexInfo", info);
+    } catch (e) {
+      console.warn("단지 정보 조회 실패:", e.message);
+      updateProp(selectedProp.id, "complexInfo", null);
+    } finally {
+      setComplexInfoLoading(false);
+    }
   }
 
   function handleAddProperty() {
@@ -124,7 +138,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       setSelectedArea("전체");
       updateProp(selectedProp.id, "selectedArea", "전체");
 
-      await loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
+      // 건축물대장 단지 정보 조회 (병렬)
+      const txPromise = loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
+      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address);
+      await Promise.all([txPromise, complexPromise]);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
     } finally {
@@ -242,6 +259,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   data={searchResults}
                   keyExtractor={(item, i) => `${item.complexId || item.aptName}_${i}`}
                   keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled={true}
                   style={{ maxHeight: 250 }}
                   renderItem={({ item }) => (
                     <TouchableOpacity
@@ -322,6 +340,74 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               </ScrollView>
             </View>
           )}
+
+          {/* 건축물대장 단지 정보 */}
+          {complexInfoLoading ? (
+            <View style={styles.loadingCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.loadingText}>단지 정보 조회 중...</Text>
+            </View>
+          ) : selectedProp.complexInfo ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>건축물대장 단지 정보</Text>
+              <View style={styles.complexGrid}>
+                <View style={styles.complexRow}>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>용적률</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.vlRat}%</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>건폐율</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.bcRat}%</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>최고층</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.maxFloor}층</Text>
+                  </View>
+                </View>
+                <View style={styles.complexRow}>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>총세대수</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalHouseholds}세대</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>총주차</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalParking}대</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>세대당 주차</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.parkingPerUnit}대</Text>
+                  </View>
+                </View>
+                <View style={styles.complexRow}>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>동수</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.buildingCount}개동</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>지하</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.maxUgrndFloor}층</Text>
+                  </View>
+                  <View style={styles.complexItem}>
+                    <Text style={styles.complexLabel}>사용승인일</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.useAprDate || "-"}</Text>
+                  </View>
+                </View>
+              </View>
+              {selectedProp.complexInfo.exclusiveAreas && selectedProp.complexInfo.exclusiveAreas.length > 0 && (
+                <View style={styles.complexAreasSection}>
+                  <Text style={styles.complexAreasTitle}>전용면적 종류</Text>
+                  <View style={styles.complexAreasRow}>
+                    {selectedProp.complexInfo.exclusiveAreas.map((a, i) => (
+                      <View key={i} style={styles.complexAreaPill}>
+                        <Text style={styles.complexAreaText}>{a.area}m2 ({a.areaPyeong}평)</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </View>
+          ) : null}
 
           {/* 실거래 정보 테이블 */}
           {transactionLoading ? (
@@ -585,6 +671,18 @@ const styles = StyleSheet.create({
   neighborRowCurrent: { backgroundColor: "rgba(99,102,241,0.1)" },
   neighborName:    { color: COLORS.textMuted, fontSize: 12 },
   neighborAvg:     { color: COLORS.text, fontSize: 12, fontWeight: "700" },
+
+  // 건축물대장 단지 정보
+  complexGrid:        { gap: 10 },
+  complexRow:         { flexDirection: "row", gap: 8 },
+  complexItem:        { flex: 1, backgroundColor: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 10, alignItems: "center" },
+  complexLabel:       { color: COLORS.textFaint, fontSize: 10, fontWeight: "600", marginBottom: 4 },
+  complexValue:       { color: COLORS.text, fontSize: 13, fontWeight: "700" },
+  complexAreasSection:{ marginTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderFaint, paddingTop: 10 },
+  complexAreasTitle:  { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", marginBottom: 8 },
+  complexAreasRow:    { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  complexAreaPill:    { backgroundColor: "rgba(99,102,241,0.12)", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  complexAreaText:    { color: "#818cf8", fontSize: 11, fontWeight: "600" },
 
   // 기존 스타일
   summaryCard: { borderWidth: 1, borderRadius: 16, padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },

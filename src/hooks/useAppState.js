@@ -20,7 +20,8 @@ export default function useAppState() {
       lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
       recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
       pricePercentile: null, dongPercentile: null,
-      dongSummary: [], transactionHistory: [], neighborComparison: [] },
+      dongSummary: [], transactionHistory: [], neighborComparison: [],
+      complexInfo: null },
   ]);
 
   // ── Sharing state ──────────────────────────────────────────
@@ -275,6 +276,7 @@ export default function useAppState() {
       recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
       pricePercentile: null, dongPercentile: null,
       dongSummary: [], transactionHistory: [], neighborComparison: [],
+      complexInfo: null,
     }]);
     return id;
   }
