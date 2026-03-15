@@ -134,7 +134,7 @@ export default function ShareModal({
           style={[styles.sheet, { transform: [{ translateY }] }]}
           {...panResponder.panHandlers}
         >
-          <TouchableOpacity activeOpacity={1}>
+          <View onStartShouldSetResponder={() => true}>
 
             {/* Handle bar */}
             <View style={styles.handleArea}>
@@ -330,7 +330,7 @@ export default function ShareModal({
 
               {keyboardHeight > 0 && <View style={{ height: keyboardHeight }} />}
             </ScrollView>
-          </TouchableOpacity>
+          </View>
         </Animated.View>
       </TouchableOpacity>
     </Modal>
