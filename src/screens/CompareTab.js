@@ -1,9 +1,31 @@
 // src/screens/CompareTab.js
-import React from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import React, { lazy, Suspense } from "react";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
 import { COLORS, calcScore, getGrade, getScoreColor, formatPrice } from "../constants";
-import { BarChart, LineChart } from "react-native-gifted-charts";
-import Svg, { Polygon, Circle, Line, Text as SvgText } from "react-native-svg";
+
+// Lazy load chart libraries to prevent crash on startup
+let BarChart, LineChart, Svg, Polygon, Circle, Line, SvgText;
+let chartsLoaded = false;
+
+function loadCharts() {
+  if (chartsLoaded) return true;
+  try {
+    const gifted = require("react-native-gifted-charts");
+    BarChart = gifted.BarChart;
+    LineChart = gifted.LineChart;
+    const svg = require("react-native-svg");
+    Svg = svg.default || svg.Svg;
+    Polygon = svg.Polygon;
+    Circle = svg.Circle;
+    Line = svg.Line;
+    SvgText = svg.Text;
+    chartsLoaded = true;
+    return true;
+  } catch (e) {
+    console.warn("차트 라이브러리 로드 실패:", e.message);
+    return false;
+  }
+}
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
@@ -64,6 +86,7 @@ function PropertyCard({ property, criteria, onPress, rank }) {
 function RadarChart({ properties, criteria }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
   if (activeCriteria.length < 3 || properties.length === 0) return null;
+  if (!loadCharts()) return null;
 
   const axes = activeCriteria.slice(0, 8); // 최대 8축
   const size = SCREEN_WIDTH - 80;
@@ -195,7 +218,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
       ))}
 
       {/* 가격 비교 막대 차트 */}
-      {barData.length > 0 && (
+      {barData.length > 0 && loadCharts() && (
         <View style={styles.chartCard}>
           <Text style={styles.chartTitle}>📊 가격 비교 (억원)</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -231,7 +254,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
       )}
 
       {/* 시세 추이 꺾은선 차트 */}
-      {lineDataSets.length > 0 && (
+      {lineDataSets.length > 0 && loadCharts() && (
         <View style={styles.chartCard}>
           <Text style={styles.chartTitle}>📈 시세 추이 (억원)</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
