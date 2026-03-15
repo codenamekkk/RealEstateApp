@@ -52,7 +52,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSearchResults([]);
     if (selectedProp?.lawdCd) {
       // 이미 검색된 매물이면 평수 목록 복원
-      loadAreas(selectedProp.name, selectedProp.lawdCd);
+      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear);
       setSelectedArea(selectedProp.selectedArea || "전체");
     } else {
       setAreas([]);
@@ -60,9 +60,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }, [selectedPropId]);
 
-  async function loadAreas(aptNm, lawdCd) {
+  async function loadAreas(aptNm, lawdCd, buildYear) {
     try {
-      const areasData = await getApartmentAreas(aptNm, lawdCd);
+      const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear);
       setAreas(areasData);
     } catch { setAreas([]); }
   }
@@ -105,22 +105,24 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   async function handleSelectApartment(item) {
     setShowDropdown(false);
     setSearchResults([]);
-    updateProp(selectedProp.id, "name", item.placeName);
-    updateProp(selectedProp.id, "address", item.addressName);
+    updateProp(selectedProp.id, "name", item.aptName);
+    updateProp(selectedProp.id, "address", item.address);
+    if (item.buildYear) {
+      updateProp(selectedProp.id, "buildYear", parseInt(item.buildYear));
+    }
 
     try {
-      const regionData = await getRegionCode(item.addressName);
+      const regionData = await getRegionCode(item.address);
       updateProp(selectedProp.id, "lawdCd", regionData.lawdCd);
       updateProp(selectedProp.id, "umdNm", regionData.umdNm);
       updateProp(selectedProp.id, "guNm", regionData.guNm);
 
-      const areasData = await getApartmentAreas(item.placeName, regionData.lawdCd);
+      const areasData = await getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear);
       setAreas(areasData);
       setSelectedArea("전체");
       updateProp(selectedProp.id, "selectedArea", "전체");
 
-      // 자동으로 실거래 데이터 로드
-      await loadTransactionData(item.placeName, regionData.lawdCd, "전체", regionData.umdNm);
+      await loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
     }
@@ -131,16 +133,16 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSelectedArea(area);
     updateProp(selectedProp.id, "selectedArea", area);
     if (selectedProp.lawdCd) {
-      await loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm);
+      await loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear);
     }
   }
 
   // 실거래 + 지역 분석 데이터 로드
-  async function loadTransactionData(aptNm, lawdCd, area, umdNm) {
+  async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear) {
     setTransactionLoading(true);
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
-      const data = await getTransactions(aptNm, lawdCd, areaParam, 12);
+      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear);
 
       updateProp(selectedProp.id, "dongSummary", data.dongSummary || []);
       updateProp(selectedProp.id, "transactionHistory", data.transactions || []);
@@ -157,12 +159,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         // 가격 자동 입력 (최근 실거래가 기준, 만원 → 원)
         if (!selectedProp.price) {
           updateProp(selectedProp.id, "price", String(recentPrice * 10000));
-        }
-
-        // 건축년도
-        const firstTx = data.transactions?.[0];
-        if (firstTx?.buildYear) {
-          updateProp(selectedProp.id, "buildYear", firstTx.buildYear);
         }
       }
 
@@ -240,16 +236,21 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               <View style={styles.dropdown}>
                 <FlatList
                   data={searchResults}
-                  keyExtractor={(item, i) => `${item.placeName}_${i}`}
+                  keyExtractor={(item, i) => `${item.complexId || item.aptName}_${i}`}
                   keyboardShouldPersistTaps="handled"
-                  style={{ maxHeight: 200 }}
+                  style={{ maxHeight: 250 }}
                   renderItem={({ item }) => (
                     <TouchableOpacity
                       style={styles.dropdownItem}
                       onPress={() => handleSelectApartment(item)}
                     >
-                      <Text style={styles.dropdownName}>{item.placeName}</Text>
-                      <Text style={styles.dropdownAddr}>{item.addressName}</Text>
+                      <Text style={styles.dropdownName}>{item.aptName}</Text>
+                      <Text style={styles.dropdownAddr}>{item.address}</Text>
+                      <Text style={styles.dropdownMeta}>
+                        {item.buildYear ? `${item.buildYear}년` : ""}
+                        {item.units ? ` · ${item.units}세대` : ""}
+                        {item.buildings ? ` · ${item.buildings}동` : ""}
+                      </Text>
                     </TouchableOpacity>
                   )}
                 />
@@ -525,6 +526,7 @@ const styles = StyleSheet.create({
   dropdownItem:  { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   dropdownName:  { color: COLORS.text, fontSize: 13, fontWeight: "700" },
   dropdownAddr:  { color: COLORS.textFaint, fontSize: 11, marginTop: 2 },
+  dropdownMeta:  { color: COLORS.textFaint, fontSize: 10, marginTop: 1 },
 
   // 평수 선택
   areaSection: { marginBottom: 16 },

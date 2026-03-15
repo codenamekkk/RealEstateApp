@@ -13,14 +13,18 @@ export async function getRegionCode(address) {
   return res.json();
 }
 
-export async function getApartmentAreas(aptNm, lawdCd) {
-  const res = await fetch(`${SERVER_URL}/api/apartment/areas?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}`);
+export async function getApartmentAreas(aptNm, lawdCd, buildYear) {
+  let url = `${SERVER_URL}/api/apartment/areas?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}`;
+  if (buildYear) url += `&buildYear=${buildYear}`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error("평수 조회 실패");
   return res.json();
 }
 
-export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12) {
-  const res = await fetch(`${SERVER_URL}/api/apartment/transactions?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`);
+export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear) {
+  let url = `${SERVER_URL}/api/apartment/transactions?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+  if (buildYear) url += `&buildYear=${buildYear}`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error("거래 조회 실패");
   return res.json();
 }

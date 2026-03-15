@@ -97,10 +97,10 @@ if (regionCount.cnt === 0) {
 }
 
 // ── API 키 ───────────────────────────────────────────────────────
-const KAKAO_API_KEY = process.env.KAKAO_REST_API_KEY || "";
+const KREB_API_KEY = process.env.KREB_API_KEY || "";
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
 
-if (!KAKAO_API_KEY) console.warn("⚠️ KAKAO_REST_API_KEY 환경변수가 설정되지 않았습니다");
+if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
 
 // ── Express + Socket.io ─────────────────────────────────────────
@@ -364,29 +364,30 @@ function getMonthRange(months) {
   return result;
 }
 
-// ── 아파트 검색 (카카오 프록시) ─────────────────────────────────────
+// ── 아파트 검색 (한국부동산원 API) ───────────────────────────────────
 app.get("/api/search/apartment", async (req, res) => {
   const { query } = req.query;
-  if (!query) return res.status(400).json({ error: "query 필수" });
-  if (!KAKAO_API_KEY) return res.status(503).json({ error: "카카오 API 키 미설정" });
+  if (!query || query.length < 2) return res.json([]);
+  if (!KREB_API_KEY) return res.status(503).json({ error: "KREB API 키 미설정" });
 
   try {
-    const kakaoRes = await fetch(
-      `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(query + " 아파트")}&size=15`,
-      { headers: { Authorization: `KakaoAK ${KAKAO_API_KEY}` }, timeout: 10000 }
-    );
-    const data = await kakaoRes.json();
-    const results = (data.documents || []).map(d => ({
-      placeName: d.place_name,
-      addressName: d.address_name,
-      roadAddressName: d.road_address_name || "",
-      x: d.x,
-      y: d.y,
-      categoryName: d.category_name || "",
+    const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(query);
+    const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
+    const url = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=20&${condName}&${condType}`;
+    const krebRes = await fetch(url, { timeout: 10000 });
+    const data = await krebRes.json();
+
+    const results = (data.data || []).map(item => ({
+      aptName: (item["단지명_공시가격"] || "").trim(),
+      address: (item["주소"] || "").trim(),
+      buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
+      units: parseInt(item["세대수"]) || null,
+      buildings: parseInt(item["동수"]) || null,
+      complexId: item["단지고유번호"] || null,
     }));
     res.json(results);
   } catch (e) {
-    console.error("카카오 검색 실패:", e.message);
+    console.error("KREB 검색 실패:", e.message);
     res.status(500).json({ error: "검색 서비스 오류" });
   }
 });
@@ -429,7 +430,7 @@ app.get("/api/region-code", (req, res) => {
 
 // ── 아파트 평수 목록 조회 ───────────────────────────────────────────
 app.get("/api/apartment/areas", async (req, res) => {
-  const { aptNm, lawdCd } = req.query;
+  const { aptNm, lawdCd, buildYear } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
@@ -439,13 +440,18 @@ app.get("/api/apartment/areas", async (req, res) => {
       await ensureCached(lawdCd, ym);
     }
 
-    // "아파트","단지" 등 접미사 제거 후 LIKE 매칭
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    const rows = db.prepare(`
+    let areaQuery = `
       SELECT DISTINCT exclu_use_ar FROM transaction_cache
       WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')
-      ORDER BY exclu_use_ar
-    `).all(lawdCd, cleanName, `${cleanName}%`, cleanName);
+    `;
+    const areaParams = [lawdCd, cleanName, `${cleanName}%`, cleanName];
+    if (buildYear) {
+      areaQuery += ` AND build_year = ?`;
+      areaParams.push(parseInt(buildYear));
+    }
+    areaQuery += ` ORDER BY exclu_use_ar`;
+    const rows = db.prepare(areaQuery).all(...areaParams);
 
     const areas = rows.map(r => ({
       area: r.exclu_use_ar,
@@ -460,7 +466,7 @@ app.get("/api/apartment/areas", async (req, res) => {
 
 // ── 실거래 조회 ─────────────────────────────────────────────────────
 app.get("/api/apartment/transactions", async (req, res) => {
-  const { aptNm, lawdCd, area, months: monthsStr } = req.query;
+  const { aptNm, lawdCd, area, months: monthsStr, buildYear } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
@@ -474,6 +480,11 @@ app.get("/api/apartment/transactions", async (req, res) => {
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
     const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
+
+    if (buildYear) {
+      query += ` AND build_year = ?`;
+      params.push(parseInt(buildYear));
+    }
 
     if (area && area !== "전체") {
       const areaNum = parseFloat(area);
