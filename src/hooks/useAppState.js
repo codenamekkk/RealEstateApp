@@ -57,24 +57,7 @@ export default function useAppState() {
       setNickname(userNickname);
       myIdRef.current = userId;
 
-      // Register on server (1회 재시도)
-      const registerUser = async (retries = 1) => {
-        try {
-          await fetch(`${SERVER_URL}/api/users`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: userId, nickname: userNickname }),
-          });
-        } catch (e) {
-          console.warn("서버 등록 실패:", e.message);
-          if (retries > 0) {
-            setTimeout(() => registerUser(retries - 1), 3000);
-          }
-        }
-      };
-      await registerUser();
-
-      // Load local data
+      // Load local data first (오프라인 퍼스트)
       const raw = await AsyncStorage.getItem(LOCAL_KEY);
       if (raw) {
         try {
@@ -90,6 +73,21 @@ export default function useAppState() {
       }
 
       initialLoadDone.current = true;
+
+      // Register on server (네트워크 작업은 백그라운드로)
+      const registerUser = (retries = 1) => {
+        fetch(`${SERVER_URL}/api/users`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: userId, nickname: userNickname }),
+        }).catch(e => {
+          console.warn("서버 등록 실패:", e.message);
+          if (retries > 0) {
+            setTimeout(() => registerUser(retries - 1), 3000);
+          }
+        });
+      };
+      registerUser();
 
       // Connect socket
       connectSocket(userId);

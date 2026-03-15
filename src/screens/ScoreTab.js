@@ -176,11 +176,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         const highestPrice = Math.max(...allHighest);
         updateProp(selectedProp.id, "recentPrice", recentPrice);
         updateProp(selectedProp.id, "highestPrice", highestPrice);
-
-        // 가격 자동 입력 (최근 실거래가 기준, 만원 → 원)
-        if (!selectedProp.price) {
-          updateProp(selectedProp.id, "price", String(recentPrice * 10000));
-        }
       }
 
       // 지역 시세 분석
