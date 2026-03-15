@@ -371,20 +371,35 @@ app.get("/api/search/apartment", async (req, res) => {
   if (!KREB_API_KEY) return res.status(503).json({ error: "KREB API 키 미설정" });
 
   try {
-    const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(query);
+    // 이름 검색과 주소 검색을 동시에 수행하여 합침
     const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
-    const url = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=20&${condName}&${condType}`;
-    const krebRes = await fetch(url, { timeout: 10000 });
-    const data = await krebRes.json();
+    const baseUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=15&${condType}`;
 
-    const results = (data.data || []).map(item => ({
-      aptName: (item["단지명_공시가격"] || "").trim(),
-      address: (item["주소"] || "").trim(),
-      buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
-      units: parseInt(item["세대수"]) || null,
-      buildings: parseInt(item["동수"]) || null,
-      complexId: item["단지고유번호"] || null,
-    }));
+    const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(query);
+    const condAddr = encodeURIComponent("cond[주소::LIKE]") + "=" + encodeURIComponent(query);
+
+    const [nameRes, addrRes] = await Promise.all([
+      fetch(`${baseUrl}&${condName}`, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] })),
+      fetch(`${baseUrl}&${condAddr}`, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] })),
+    ]);
+
+    const seen = new Set();
+    const merged = [...(nameRes.data || []), ...(addrRes.data || [])];
+    const results = [];
+    for (const item of merged) {
+      const id = item["단지고유번호"];
+      if (seen.has(id)) continue;
+      seen.add(id);
+      results.push({
+        aptName: (item["단지명_공시가격"] || "").trim(),
+        address: (item["주소"] || "").trim(),
+        buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
+        units: parseInt(item["세대수"]) || null,
+        buildings: parseInt(item["동수"]) || null,
+        complexId: id || null,
+      });
+      if (results.length >= 20) break;
+    }
     res.json(results);
   } catch (e) {
     console.error("KREB 검색 실패:", e.message);

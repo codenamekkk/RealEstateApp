@@ -216,7 +216,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <TextInput
                   value={selectedProp.name}
                   onChangeText={handleNameChange}
-                  placeholder="아파트명 검색 (예: 래미안)"
+                  placeholder="아파트명 또는 동 이름 검색 (예: 한신, 청량리동)"
                   placeholderTextColor={COLORS.textFaint}
                   style={styles.nameInput}
                 />
@@ -259,10 +259,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
             <TextInput
               value={selectedProp.address}
-              onChangeText={v => updateProp(selectedProp.id, "address", v)}
-              placeholder="주소 (선택)"
+              editable={false}
+              placeholder="매물 선택 시 자동 입력"
               placeholderTextColor={COLORS.textFaint}
-              style={styles.addressInput}
+              style={[styles.addressInput, { opacity: 0.7 }]}
             />
             <View style={styles.priceRow}>
               <TextInput
@@ -271,7 +271,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   const digits = v.replace(/[^0-9]/g, "");
                   updateProp(selectedProp.id, "price", digits);
                 }}
-                placeholder="매매가 (원)"
+                placeholder="희망 거래 가격 (원)"
                 placeholderTextColor={COLORS.textFaint}
                 keyboardType="numeric"
                 style={[styles.priceInput, { flex: 1 }]}
