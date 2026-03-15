@@ -770,7 +770,7 @@ function parseKrebAddress(address) {
 /**
  * 법정동코드 조회: 동이름으로 bjdongCd 조회
  * 1. 먼저 dong_codes 테이블에서 캐시 확인
- * 2. 없으면 행정표준코드 API로 조회 후 캐시
+ * 2. 없으면 단지목록 API로 시군구 내 단지를 조회하여 bjdCode 추출 후 캐시
  */
 async function resolveBjdongCd(sigunguCd, dongNm) {
   // 1. 캐시 확인
@@ -779,31 +779,33 @@ async function resolveBjdongCd(sigunguCd, dongNm) {
   ).get(sigunguCd, dongNm);
   if (cached) return cached.bjdong_cd;
 
-  // 2. 행정표준코드관리시스템 API로 조회
+  // 2. 단지목록 API로 시군구 내 모든 단지 조회하여 bjdCode 수집
   try {
-    const url = `https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList?serviceKey=${BUILDING_API_KEY}&pageNo=1&numOfRows=100&type=json&locatadd_nm=${encodeURIComponent(dongNm)}`;
-    console.log("[DONG] 법정동코드 조회:", dongNm);
-    const res = await fetch(url, { timeout: 10000 });
+    console.log("[DONG] 단지목록 API로 법정동코드 조회:", sigunguCd, dongNm);
+    const url = `https://apis.data.go.kr/1613000/AptListService3/getSigunguAptList3?serviceKey=${MOLIT_HOUSING_API_KEY}&sigunguCode=${sigunguCd}&pageNo=1&numOfRows=1000`;
+    const res = await fetch(url, { timeout: 15000 });
     const data = await res.json();
+    const items = data?.response?.body?.items || [];
 
-    const items = data?.StanReginCd?.[1]?.row;
-    if (!items || items.length === 0) {
-      console.log("[DONG] 법정동코드 결과 없음");
+    if (items.length === 0) {
+      console.log("[DONG] 단지목록 결과 없음");
       return null;
     }
 
-    // sigunguCd와 매칭되는 항목 찾기
+    // bjdCode에서 동코드 추출하여 캐시
     const insertDong = db.prepare(
       "INSERT OR IGNORE INTO dong_codes (sigungu_cd, bjdong_cd, dong_nm) VALUES (?, ?, ?)"
     );
+    const seenCodes = new Set();
     const tx = db.transaction(() => {
       for (const item of items) {
-        const fullCode = item.region_cd; // 10자리 법정동코드
-        if (!fullCode || fullCode.length < 10) continue;
-        const itemSigungu = fullCode.substring(0, 5);
-        const itemBjdong = fullCode.substring(5, 10);
-        const itemDongNm = item.locatjumin_nm || item.locallow_nm || "";
-        if (itemDongNm) {
+        const bjdCode = item.bjdCode;
+        if (!bjdCode || bjdCode.length < 10 || seenCodes.has(bjdCode)) continue;
+        seenCodes.add(bjdCode);
+        const itemSigungu = bjdCode.substring(0, 5);
+        const itemBjdong = bjdCode.substring(5, 10);
+        const itemDongNm = item.as3 || "";
+        if (itemDongNm && itemSigungu === sigunguCd) {
           insertDong.run(itemSigungu, itemBjdong, itemDongNm);
         }
       }
