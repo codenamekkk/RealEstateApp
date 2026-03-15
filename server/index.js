@@ -4,6 +4,12 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const Database = require("better-sqlite3");
+const fetch = require("node-fetch");
+const { XMLParser } = require("fast-xml-parser");
+const path = require("path");
+const fs = require("fs");
+
+const xmlParser = new XMLParser();
 
 // ── Database ────────────────────────────────────────────────────
 const db = new Database("rooms.db");
@@ -29,6 +35,73 @@ db.exec(`
     UNIQUE(from_id, to_id)
   )
 `);
+
+// ── 실거래가 관련 테이블 ──────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS region_codes (
+    lawd_cd   TEXT PRIMARY KEY,
+    sido_nm   TEXT NOT NULL,
+    gu_nm     TEXT NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS transaction_cache (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    lawd_cd       TEXT NOT NULL,
+    deal_ymd      TEXT NOT NULL,
+    apt_nm        TEXT NOT NULL,
+    apt_dong      TEXT DEFAULT '',
+    exclu_use_ar  REAL NOT NULL,
+    deal_amount   INTEGER NOT NULL,
+    floor         INTEGER,
+    build_year    INTEGER,
+    umd_nm        TEXT,
+    deal_year     INTEGER,
+    deal_month    INTEGER,
+    deal_day      INTEGER,
+    fetched_at    INTEGER DEFAULT (unixepoch()),
+    UNIQUE(lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, deal_day)
+  )
+`);
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_apt ON transaction_cache(lawd_cd, apt_nm)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_ymd ON transaction_cache(lawd_cd, deal_ymd)`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS api_fetch_log (
+    lawd_cd    TEXT NOT NULL,
+    deal_ymd   TEXT NOT NULL,
+    fetched_at INTEGER DEFAULT (unixepoch()),
+    PRIMARY KEY(lawd_cd, deal_ymd)
+  )
+`);
+
+// ── 법정동코드 시딩 ──────────────────────────────────────────────
+const regionCount = db.prepare("SELECT COUNT(*) as cnt FROM region_codes").get();
+if (regionCount.cnt === 0) {
+  const dataPath = path.join(__dirname, "data", "region_codes.json");
+  if (fs.existsSync(dataPath)) {
+    const regions = JSON.parse(fs.readFileSync(dataPath, "utf-8"));
+    const insert = db.prepare("INSERT OR IGNORE INTO region_codes (lawd_cd, sido_nm, gu_nm) VALUES (?, ?, ?)");
+    const tx = db.transaction(() => {
+      for (const r of regions) {
+        insert.run(r.lawdCd, r.sidoNm, r.guNm);
+      }
+    });
+    tx();
+    console.log(`✅ 법정동코드 ${regions.length}건 로드 완료`);
+  } else {
+    console.warn("⚠️ server/data/region_codes.json 파일을 찾을 수 없습니다");
+  }
+}
+
+// ── API 키 ───────────────────────────────────────────────────────
+const KAKAO_API_KEY = process.env.KAKAO_REST_API_KEY || "";
+const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
+
+if (!KAKAO_API_KEY) console.warn("⚠️ KAKAO_REST_API_KEY 환경변수가 설정되지 않았습니다");
+if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
 
 // ── Express + Socket.io ─────────────────────────────────────────
 const app = express();
@@ -222,6 +295,307 @@ app.get("/api/users/:targetId/shared-data", (req, res) => {
 app.delete("/api/share-requests/:id", (req, res) => {
   db.prepare("DELETE FROM share_requests WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
+});
+
+// ── 국토교통부 API 연동 ────────────────────────────────────────────
+async function fetchMolitData(lawdCd, dealYmd) {
+  const url = `http://openapi.molit.go.kr/OpenAPI_ToolInstallPackage/service/rest/RTMSOBJSvc/getRTMSDataSvcAptTradeDev?serviceKey=${encodeURIComponent(MOLIT_API_KEY)}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
+  const res = await fetch(url, { timeout: 15000 });
+  const xml = await res.text();
+  const json = xmlParser.parse(xml);
+  const items = json?.response?.body?.items?.item;
+  if (!items) return [];
+  return Array.isArray(items) ? items : [items];
+}
+
+async function ensureCached(lawdCd, dealYmd) {
+  const log = db.prepare("SELECT fetched_at FROM api_fetch_log WHERE lawd_cd = ? AND deal_ymd = ?").get(lawdCd, dealYmd);
+  const now = Math.floor(Date.now() / 1000);
+  const currentYm = new Date().toISOString().slice(0, 7).replace("-", "");
+  const isCurrentMonth = dealYmd === currentYm;
+
+  if (log && (!isCurrentMonth || (now - log.fetched_at) < 86400)) {
+    return; // 캐시 유효
+  }
+
+  const items = await fetchMolitData(lawdCd, dealYmd);
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO transaction_cache
+    (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const item of items) {
+      const amount = parseInt(String(item.dealAmount || "0").replace(/,/g, "").trim());
+      const area = parseFloat(item.excluUseAr || 0);
+      if (!item.aptNm || !amount || !area) continue;
+      insert.run(
+        lawdCd, dealYmd,
+        String(item.aptNm).trim(),
+        String(item.aptDong || "").trim(),
+        area, amount,
+        parseInt(item.floor) || null,
+        parseInt(item.buildYear) || null,
+        String(item.umdNm || "").trim(),
+        parseInt(item.dealYear) || null,
+        parseInt(item.dealMonth) || null,
+        parseInt(item.dealDay) || null
+      );
+    }
+    db.prepare("INSERT OR REPLACE INTO api_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+  });
+  tx();
+}
+
+function getMonthRange(months) {
+  const result = [];
+  const now = new Date();
+  for (let i = 0; i < months; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
+    result.push(ym);
+  }
+  return result;
+}
+
+// ── 아파트 검색 (카카오 프록시) ─────────────────────────────────────
+app.get("/api/search/apartment", async (req, res) => {
+  const { query } = req.query;
+  if (!query) return res.status(400).json({ error: "query 필수" });
+  if (!KAKAO_API_KEY) return res.status(503).json({ error: "카카오 API 키 미설정" });
+
+  try {
+    const kakaoRes = await fetch(
+      `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(query + " 아파트")}&size=15`,
+      { headers: { Authorization: `KakaoAK ${KAKAO_API_KEY}` }, timeout: 10000 }
+    );
+    const data = await kakaoRes.json();
+    const results = (data.documents || []).map(d => ({
+      placeName: d.place_name,
+      addressName: d.address_name,
+      roadAddressName: d.road_address_name || "",
+      x: d.x,
+      y: d.y,
+      categoryName: d.category_name || "",
+    }));
+    res.json(results);
+  } catch (e) {
+    console.error("카카오 검색 실패:", e.message);
+    res.status(500).json({ error: "검색 서비스 오류" });
+  }
+});
+
+// ── 지역코드 조회 ──────────────────────────────────────────────────
+app.get("/api/region-code", (req, res) => {
+  const { address } = req.query;
+  if (!address) return res.status(400).json({ error: "address 필수" });
+
+  const parts = address.split(/\s+/);
+  let guNm = "", umdNm = "", sidoNm = "";
+
+  for (const part of parts) {
+    if (/[시도]$/.test(part) && !sidoNm && (part.length > 2 || /특별|광역/.test(part))) {
+      sidoNm = part;
+    }
+    if (/[구군시]$/.test(part) && part.length >= 2) {
+      if (/구$/.test(part)) { guNm = part; }
+      else if (/군$/.test(part) && !guNm) { guNm = part; }
+      else if (/시$/.test(part) && !guNm && sidoNm) { guNm = part; }
+    }
+    if (/[동읍면]$/.test(part) && part.length >= 2 && !umdNm) {
+      umdNm = part;
+    }
+  }
+
+  if (!guNm) return res.status(400).json({ error: "주소에서 구/군/시를 찾을 수 없습니다" });
+
+  let row;
+  if (sidoNm) {
+    row = db.prepare("SELECT * FROM region_codes WHERE gu_nm = ? AND sido_nm LIKE ?").get(guNm, `%${sidoNm.slice(0, 2)}%`);
+  }
+  if (!row) {
+    row = db.prepare("SELECT * FROM region_codes WHERE gu_nm = ?").get(guNm);
+  }
+  if (!row) return res.status(404).json({ error: "지역코드를 찾을 수 없습니다" });
+
+  res.json({ lawdCd: row.lawd_cd, sidoNm: row.sido_nm, guNm: row.gu_nm, umdNm });
+});
+
+// ── 아파트 평수 목록 조회 ───────────────────────────────────────────
+app.get("/api/apartment/areas", async (req, res) => {
+  const { aptNm, lawdCd } = req.query;
+  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
+
+  try {
+    const months = getMonthRange(6);
+    for (const ym of months) {
+      await ensureCached(lawdCd, ym);
+    }
+
+    const rows = db.prepare(`
+      SELECT DISTINCT exclu_use_ar FROM transaction_cache
+      WHERE lawd_cd = ? AND apt_nm = ?
+      ORDER BY exclu_use_ar
+    `).all(lawdCd, aptNm);
+
+    const areas = rows.map(r => ({
+      area: r.exclu_use_ar,
+      areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
+    }));
+    res.json(areas);
+  } catch (e) {
+    console.error("평수 조회 실패:", e.message);
+    res.status(500).json({ error: "평수 조회 실패" });
+  }
+});
+
+// ── 실거래 조회 ─────────────────────────────────────────────────────
+app.get("/api/apartment/transactions", async (req, res) => {
+  const { aptNm, lawdCd, area, months: monthsStr } = req.query;
+  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
+
+  try {
+    const numMonths = parseInt(monthsStr) || 12;
+    const monthList = getMonthRange(numMonths);
+    for (const ym of monthList) {
+      await ensureCached(lawdCd, ym);
+    }
+
+    let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?`;
+    const params = [lawdCd, aptNm];
+
+    if (area && area !== "전체") {
+      const areaNum = parseFloat(area);
+      query += ` AND exclu_use_ar BETWEEN ? AND ?`;
+      params.push(areaNum - 2, areaNum + 2);
+    }
+    query += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
+
+    const rows = db.prepare(query).all(...params);
+
+    // 동별 요약 생성
+    const dongMap = {};
+    for (const r of rows) {
+      const dong = r.apt_dong || "미확인";
+      const areaKey = area && area !== "전체" ? area : String(r.exclu_use_ar);
+      const key = `${dong}_${areaKey}`;
+
+      if (!dongMap[key]) {
+        dongMap[key] = {
+          dong,
+          area: r.exclu_use_ar,
+          areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
+          recentPrice: r.deal_amount,
+          recentDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+          recentFloor: r.floor,
+          highestPrice: r.deal_amount,
+          highestDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+          highestFloor: r.floor,
+        };
+      } else {
+        if (r.deal_amount > dongMap[key].highestPrice) {
+          dongMap[key].highestPrice = r.deal_amount;
+          dongMap[key].highestDate = `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`;
+          dongMap[key].highestFloor = r.floor;
+        }
+      }
+    }
+
+    const transactions = rows.slice(0, 100).map(r => ({
+      dealDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+      dealAmount: r.deal_amount,
+      floor: r.floor,
+      aptDong: r.apt_dong || "미확인",
+      excluUseAr: r.exclu_use_ar,
+      buildYear: r.build_year,
+    }));
+
+    res.json({
+      transactions,
+      dongSummary: Object.values(dongMap),
+    });
+  } catch (e) {
+    console.error("실거래 조회 실패:", e.message);
+    res.status(500).json({ error: "실거래 조회 실패" });
+  }
+});
+
+// ── 지역 시세 분석 ──────────────────────────────────────────────────
+app.get("/api/apartment/regional-analysis", async (req, res) => {
+  const { lawdCd, umdNm, area, price } = req.query;
+  if (!lawdCd || !area || !price) return res.status(400).json({ error: "lawdCd, area, price 필수" });
+  if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
+
+  try {
+    const areaNum = parseFloat(area);
+    const priceNum = parseInt(price);
+    const months = getMonthRange(12);
+    for (const ym of months) {
+      await ensureCached(lawdCd, ym);
+    }
+
+    // 구 내 동일 평수 모든 거래
+    const guRows = db.prepare(`
+      SELECT deal_amount, umd_nm FROM transaction_cache
+      WHERE lawd_cd = ? AND exclu_use_ar BETWEEN ? AND ?
+    `).all(lawdCd, areaNum - 5, areaNum + 5);
+
+    const guPrices = guRows.map(r => r.deal_amount);
+    const guAvg = guPrices.length > 0 ? Math.round(guPrices.reduce((s, p) => s + p, 0) / guPrices.length) : null;
+    const percentile = guPrices.length > 0
+      ? Math.round((guPrices.filter(p => p > priceNum).length / guPrices.length) * 100)
+      : null;
+
+    // 동 내 분석
+    let dongAvg = null, dongPercentile = null;
+    if (umdNm) {
+      const dongPrices = guRows.filter(r => r.umd_nm === umdNm).map(r => r.deal_amount);
+      if (dongPrices.length > 0) {
+        dongAvg = Math.round(dongPrices.reduce((s, p) => s + p, 0) / dongPrices.length);
+        dongPercentile = Math.round((dongPrices.filter(p => p > priceNum).length / dongPrices.length) * 100);
+      }
+    }
+
+    // 인접 구 비교 (같은 시도)
+    const sidoPrefix = lawdCd.slice(0, 2);
+    const neighborGus = db.prepare(`
+      SELECT lawd_cd, gu_nm FROM region_codes
+      WHERE lawd_cd LIKE ? AND lawd_cd != ?
+    `).all(`${sidoPrefix}%`, lawdCd);
+
+    const neighborComparison = [];
+    // 현재 구 추가
+    const currentGu = db.prepare("SELECT gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
+    if (currentGu && guAvg) {
+      neighborComparison.push({ guNm: currentGu.gu_nm, avg: guAvg });
+    }
+
+    // 인접 구 (최대 5개, 거래 데이터가 있는 것만)
+    for (const ng of neighborGus.slice(0, 10)) {
+      const ngPrices = db.prepare(`
+        SELECT deal_amount FROM transaction_cache
+        WHERE lawd_cd = ? AND exclu_use_ar BETWEEN ? AND ?
+      `).all(ng.lawd_cd, areaNum - 5, areaNum + 5).map(r => r.deal_amount);
+
+      if (ngPrices.length > 0) {
+        neighborComparison.push({
+          guNm: ng.gu_nm,
+          avg: Math.round(ngPrices.reduce((s, p) => s + p, 0) / ngPrices.length),
+        });
+      }
+      if (neighborComparison.length >= 6) break;
+    }
+
+    neighborComparison.sort((a, b) => b.avg - a.avg);
+
+    res.json({ guAvg, dongAvg, percentile, dongPercentile, neighborComparison });
+  } catch (e) {
+    console.error("지역 분석 실패:", e.message);
+    res.status(500).json({ error: "지역 분석 실패" });
+  }
 });
 
 // ── WebSocket ───────────────────────────────────────────────────

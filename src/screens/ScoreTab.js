@@ -1,10 +1,11 @@
 // src/screens/ScoreTab.js
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View, Text, ScrollView, TouchableOpacity,
-  TextInput, StyleSheet,
+  TextInput, StyleSheet, ActivityIndicator, FlatList,
 } from "react-native";
-import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel } from "../constants";
+import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice, sqmToPyeong } from "../constants";
+import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRegionalAnalysis } from "../services/apartmentApi";
 
 function ScoreButton({ value, selected, onPress, color }) {
   const isHalf = value % 1 !== 0;
@@ -33,6 +34,39 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const activeCriteria = criteria.filter(c => !c.hidden);
   const selectedProp   = properties.find(p => p.id === selectedPropId) || properties[0];
 
+  // 검색 관련 state
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const searchTimer = useRef(null);
+
+  // 평수/실거래 관련 state
+  const [areas, setAreas] = useState([]);
+  const [selectedArea, setSelectedArea] = useState("전체");
+  const [transactionLoading, setTransactionLoading] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  // 매물 변경 시 상태 리셋
+  useEffect(() => {
+    setShowDropdown(false);
+    setSearchResults([]);
+    if (selectedProp?.lawdCd) {
+      // 이미 검색된 매물이면 평수 목록 복원
+      loadAreas(selectedProp.name, selectedProp.lawdCd);
+      setSelectedArea(selectedProp.selectedArea || "전체");
+    } else {
+      setAreas([]);
+      setSelectedArea("전체");
+    }
+  }, [selectedPropId]);
+
+  async function loadAreas(aptNm, lawdCd) {
+    try {
+      const areasData = await getApartmentAreas(aptNm, lawdCd);
+      setAreas(areasData);
+    } catch { setAreas([]); }
+  }
+
   function handleAddProperty() {
     const newId = addProperty();
     setSelectedPropId(newId);
@@ -41,6 +75,116 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   function handleRemoveProperty(id) {
     const nextId = removeProperty(id, selectedPropId);
     setSelectedPropId(nextId);
+  }
+
+  // 검색 디바운스
+  function handleNameChange(text) {
+    updateProp(selectedProp.id, "name", text);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (text.length < 2) {
+      setShowDropdown(false);
+      setSearchResults([]);
+      return;
+    }
+    setSearchLoading(true);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const results = await searchApartment(text);
+        setSearchResults(results);
+        setShowDropdown(results.length > 0);
+      } catch {
+        setSearchResults([]);
+        setShowDropdown(false);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+  }
+
+  // 검색 결과 선택
+  async function handleSelectApartment(item) {
+    setShowDropdown(false);
+    setSearchResults([]);
+    updateProp(selectedProp.id, "name", item.placeName);
+    updateProp(selectedProp.id, "address", item.addressName);
+
+    try {
+      const regionData = await getRegionCode(item.addressName);
+      updateProp(selectedProp.id, "lawdCd", regionData.lawdCd);
+      updateProp(selectedProp.id, "umdNm", regionData.umdNm);
+      updateProp(selectedProp.id, "guNm", regionData.guNm);
+
+      const areasData = await getApartmentAreas(item.placeName, regionData.lawdCd);
+      setAreas(areasData);
+      setSelectedArea("전체");
+      updateProp(selectedProp.id, "selectedArea", "전체");
+
+      // 자동으로 실거래 데이터 로드
+      await loadTransactionData(item.placeName, regionData.lawdCd, "전체", regionData.umdNm);
+    } catch (e) {
+      console.warn("매물 정보 로드 실패:", e.message);
+    }
+  }
+
+  // 평수 선택
+  async function handleAreaSelect(area) {
+    setSelectedArea(area);
+    updateProp(selectedProp.id, "selectedArea", area);
+    if (selectedProp.lawdCd) {
+      await loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm);
+    }
+  }
+
+  // 실거래 + 지역 분석 데이터 로드
+  async function loadTransactionData(aptNm, lawdCd, area, umdNm) {
+    setTransactionLoading(true);
+    try {
+      const areaParam = area === "전체" ? "전체" : String(area);
+      const data = await getTransactions(aptNm, lawdCd, areaParam, 12);
+
+      updateProp(selectedProp.id, "dongSummary", data.dongSummary || []);
+      updateProp(selectedProp.id, "transactionHistory", data.transactions || []);
+
+      // 최근/최고 거래가 추출
+      if (data.dongSummary && data.dongSummary.length > 0) {
+        const allRecent = data.dongSummary.map(d => d.recentPrice);
+        const allHighest = data.dongSummary.map(d => d.highestPrice);
+        const recentPrice = Math.max(...allRecent);
+        const highestPrice = Math.max(...allHighest);
+        updateProp(selectedProp.id, "recentPrice", recentPrice);
+        updateProp(selectedProp.id, "highestPrice", highestPrice);
+
+        // 가격 자동 입력 (최근 실거래가 기준, 만원 → 원)
+        if (!selectedProp.price) {
+          updateProp(selectedProp.id, "price", String(recentPrice * 10000));
+        }
+
+        // 건축년도
+        const firstTx = data.transactions?.[0];
+        if (firstTx?.buildYear) {
+          updateProp(selectedProp.id, "buildYear", firstTx.buildYear);
+        }
+      }
+
+      // 지역 시세 분석
+      if (data.dongSummary && data.dongSummary.length > 0) {
+        setAnalysisLoading(true);
+        try {
+          const priceForAnalysis = data.dongSummary[0].recentPrice;
+          const areaForAnalysis = area === "전체" ? data.dongSummary[0].area : area;
+          const analysis = await getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis);
+          updateProp(selectedProp.id, "regionAvg", analysis.guAvg);
+          updateProp(selectedProp.id, "dongAvg", analysis.dongAvg);
+          updateProp(selectedProp.id, "pricePercentile", analysis.percentile);
+          updateProp(selectedProp.id, "dongPercentile", analysis.dongPercentile);
+          updateProp(selectedProp.id, "neighborComparison", analysis.neighborComparison || []);
+        } catch {} finally { setAnalysisLoading(false); }
+      }
+    } catch (e) {
+      console.warn("실거래 데이터 로드 실패:", e.message);
+    } finally {
+      setTransactionLoading(false);
+    }
   }
 
   const { percent } = selectedProp ? calcScore(selectedProp, activeCriteria) : { percent: 0 };
@@ -69,22 +213,49 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
       {selectedProp ? (
         <>
-          {/* Property info */}
+          {/* Property info with search */}
           <View style={styles.card}>
             <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
-              <TextInput
-                value={selectedProp.name}
-                onChangeText={v => updateProp(selectedProp.id, "name", v)}
-                placeholder="매물 이름"
-                placeholderTextColor={COLORS.textFaint}
-                style={styles.nameInput}
-              />
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  value={selectedProp.name}
+                  onChangeText={handleNameChange}
+                  placeholder="아파트명 검색 (예: 래미안)"
+                  placeholderTextColor={COLORS.textFaint}
+                  style={styles.nameInput}
+                />
+                {searchLoading && (
+                  <ActivityIndicator size="small" color={COLORS.primary} style={{ position: "absolute", right: 10, top: 10 }} />
+                )}
+              </View>
               {properties.length > 1 && (
                 <TouchableOpacity onPress={() => handleRemoveProperty(selectedProp.id)} style={styles.deleteBtn}>
                   <Text style={{ color: COLORS.danger, fontSize: 13 }}>삭제</Text>
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* Search dropdown */}
+            {showDropdown && (
+              <View style={styles.dropdown}>
+                <FlatList
+                  data={searchResults}
+                  keyExtractor={(item, i) => `${item.placeName}_${i}`}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ maxHeight: 200 }}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={styles.dropdownItem}
+                      onPress={() => handleSelectApartment(item)}
+                    >
+                      <Text style={styles.dropdownName}>{item.placeName}</Text>
+                      <Text style={styles.dropdownAddr}>{item.addressName}</Text>
+                    </TouchableOpacity>
+                  )}
+                />
+              </View>
+            )}
+
             <TextInput
               value={selectedProp.address}
               onChangeText={v => updateProp(selectedProp.id, "address", v)}
@@ -108,7 +279,160 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <Text style={styles.priceUnit}>원</Text>
               ) : null}
             </View>
+            {selectedProp.buildYear && (
+              <Text style={styles.buildYearText}>건축년도: {selectedProp.buildYear}년</Text>
+            )}
           </View>
+
+          {/* 평수 선택 */}
+          {selectedProp.lawdCd && areas.length > 0 && (
+            <View style={styles.areaSection}>
+              <Text style={styles.sectionTitle}>📐 평수 선택</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <TouchableOpacity
+                  onPress={() => handleAreaSelect("전체")}
+                  style={[styles.areaPill, selectedArea === "전체" && styles.areaPillActive]}
+                >
+                  <Text style={[styles.areaPillText, selectedArea === "전체" && styles.areaPillTextActive]}>전체</Text>
+                </TouchableOpacity>
+                {areas.map(a => (
+                  <TouchableOpacity
+                    key={a.area}
+                    onPress={() => handleAreaSelect(a.area)}
+                    style={[styles.areaPill, selectedArea === String(a.area) && styles.areaPillActive]}
+                  >
+                    <Text style={[styles.areaPillText, selectedArea === String(a.area) && styles.areaPillTextActive]}>
+                      {a.area}㎡({a.areaPyeong}평)
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* 실거래 정보 테이블 */}
+          {transactionLoading ? (
+            <View style={styles.loadingCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.loadingText}>실거래 데이터 조회 중...</Text>
+            </View>
+          ) : selectedProp.dongSummary && selectedProp.dongSummary.length > 0 ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>📋 동별 실거래 정보</Text>
+              <View style={styles.txTable}>
+                {/* 헤더 */}
+                <View style={styles.txRow}>
+                  <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
+                  {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>평수</Text>}
+                  <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>최근 거래</Text>
+                  <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>거래일</Text>
+                  <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>최고가</Text>
+                </View>
+                {/* 데이터 */}
+                {selectedProp.dongSummary.map((d, i) => (
+                  <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
+                    <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
+                    {selectedArea === "전체" && (
+                      <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.areaPyeong}평</Text>
+                    )}
+                    <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
+                      {formatPrice(d.recentPrice)}
+                    </Text>
+                    <Text style={[styles.txCell, styles.txData, { flex: 1.5 }]}>{d.recentDate}</Text>
+                    <Text style={[styles.txCell, styles.txData, styles.txHighest, { flex: 1.5 }]}>
+                      {formatPrice(d.highestPrice)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
+          {/* 지역 시세 분석 */}
+          {analysisLoading ? (
+            <View style={styles.loadingCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.loadingText}>지역 시세 분석 중...</Text>
+            </View>
+          ) : selectedProp.regionAvg ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>📊 지역 시세 분석</Text>
+
+              {/* 백분위 뱃지 */}
+              {selectedProp.pricePercentile != null && (
+                <View style={styles.percentileSection}>
+                  <View style={styles.percentileRow}>
+                    <Text style={styles.percentileLabel}>{selectedProp.guNm || "구"} 내</Text>
+                    <View style={styles.percentileBadge}>
+                      <Text style={styles.percentileText}>상위 {selectedProp.pricePercentile}%</Text>
+                    </View>
+                    <View style={styles.percentileBar}>
+                      <View style={[styles.percentileFill, { width: `${100 - selectedProp.pricePercentile}%` }]} />
+                    </View>
+                  </View>
+                  {selectedProp.dongPercentile != null && selectedProp.umdNm && (
+                    <View style={styles.percentileRow}>
+                      <Text style={styles.percentileLabel}>{selectedProp.umdNm} 내</Text>
+                      <View style={styles.percentileBadge}>
+                        <Text style={styles.percentileText}>상위 {selectedProp.dongPercentile}%</Text>
+                      </View>
+                      <View style={styles.percentileBar}>
+                        <View style={[styles.percentileFill, { width: `${100 - selectedProp.dongPercentile}%` }]} />
+                      </View>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* 평균 비교 */}
+              <View style={styles.avgSection}>
+                {selectedProp.regionAvg && (
+                  <View style={styles.avgRow}>
+                    <Text style={styles.avgLabel}>{selectedProp.guNm || "구"} 평균</Text>
+                    <Text style={styles.avgValue}>{formatPrice(selectedProp.regionAvg)}</Text>
+                    {selectedProp.recentPrice && (() => {
+                      const diff = selectedProp.recentPrice - selectedProp.regionAvg;
+                      const isLower = diff < 0;
+                      return <Text style={[styles.avgDiff, { color: isLower ? "#22c55e" : "#ef4444" }]}>
+                        {isLower ? "▼" : "▲"} {formatPrice(Math.abs(diff))} {isLower ? "저렴" : "높음"}
+                      </Text>;
+                    })()}
+                  </View>
+                )}
+                {selectedProp.dongAvg && selectedProp.umdNm && (
+                  <View style={styles.avgRow}>
+                    <Text style={styles.avgLabel}>{selectedProp.umdNm} 평균</Text>
+                    <Text style={styles.avgValue}>{formatPrice(selectedProp.dongAvg)}</Text>
+                    {selectedProp.recentPrice && (() => {
+                      const diff = selectedProp.recentPrice - selectedProp.dongAvg;
+                      const isLower = diff < 0;
+                      return <Text style={[styles.avgDiff, { color: isLower ? "#22c55e" : "#ef4444" }]}>
+                        {isLower ? "▼" : "▲"} {formatPrice(Math.abs(diff))} {isLower ? "저렴" : "높음"}
+                      </Text>;
+                    })()}
+                  </View>
+                )}
+              </View>
+
+              {/* 인접 구 비교 */}
+              {selectedProp.neighborComparison && selectedProp.neighborComparison.length > 1 && (
+                <View style={styles.neighborSection}>
+                  <Text style={styles.neighborTitle}>인접 지역 비교</Text>
+                  {selectedProp.neighborComparison.map((n, i) => {
+                    const isCurrent = n.guNm === (selectedProp.guNm || "");
+                    return (
+                      <View key={i} style={[styles.neighborRow, isCurrent && styles.neighborRowCurrent]}>
+                        <Text style={[styles.neighborName, isCurrent && { color: COLORS.primary, fontWeight: "800" }]}>
+                          {n.guNm} {isCurrent ? "★" : ""}
+                        </Text>
+                        <Text style={styles.neighborAvg}>{formatPrice(n.avg)}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          ) : null}
 
           {/* Score summary */}
           <View style={[styles.summaryCard, { borderColor: grade.color + "55", backgroundColor: grade.color + "11" }]}>
@@ -194,6 +518,59 @@ const styles = StyleSheet.create({
   priceInput:  { backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, color: COLORS.textMuted, fontSize: 12 },
   priceUnit:   { color: COLORS.textFaint, fontSize: 12, fontWeight: "700", marginLeft: 6 },
   deleteBtn:   { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", backgroundColor: "rgba(239,68,68,0.08)" },
+  buildYearText: { color: COLORS.textFaint, fontSize: 11, marginTop: 6 },
+
+  // 드롭다운
+  dropdown:      { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.primaryBorder, borderRadius: 10, marginBottom: 10, overflow: "hidden" },
+  dropdownItem:  { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  dropdownName:  { color: COLORS.text, fontSize: 13, fontWeight: "700" },
+  dropdownAddr:  { color: COLORS.textFaint, fontSize: 11, marginTop: 2 },
+
+  // 평수 선택
+  areaSection: { marginBottom: 16 },
+  sectionTitle: { fontSize: 13, fontWeight: "700", color: COLORS.textMuted, marginBottom: 10 },
+  areaPill:      { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, borderWidth: 1.5, borderColor: "rgba(255,255,255,0.1)", marginRight: 8 },
+  areaPillActive: { borderColor: "#22c55e", backgroundColor: "rgba(34,197,94,0.15)" },
+  areaPillText:   { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
+  areaPillTextActive: { color: "#22c55e" },
+
+  // 로딩
+  loadingCard: { flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 20, gap: 10, marginBottom: 16 },
+  loadingText: { color: COLORS.textFaint, fontSize: 12 },
+
+  // 실거래 테이블
+  txTable:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, overflow: "hidden" },
+  txRow:     { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: COLORS.borderFaint },
+  txRowAlt:  { backgroundColor: "rgba(255,255,255,0.02)" },
+  txCell:    { paddingHorizontal: 6, paddingVertical: 8, alignItems: "center", justifyContent: "center" },
+  txHeader:  { backgroundColor: "rgba(255,255,255,0.05)" },
+  txData:    { },
+  txPrice:   { },
+  txHighest: { },
+
+  // 지역 시세 분석
+  percentileSection: { marginBottom: 14 },
+  percentileRow:   { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  percentileLabel: { color: COLORS.textMuted, fontSize: 12, width: 60 },
+  percentileBadge: { backgroundColor: "rgba(99,102,241,0.2)", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
+  percentileText:  { color: "#818cf8", fontSize: 12, fontWeight: "700" },
+  percentileBar:   { flex: 1, height: 6, backgroundColor: "#1e1e2e", borderRadius: 3, overflow: "hidden" },
+  percentileFill:  { height: "100%", backgroundColor: "#6366f1", borderRadius: 3 },
+
+  avgSection:   { marginBottom: 14 },
+  avgRow:       { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
+  avgLabel:     { color: COLORS.textMuted, fontSize: 12, width: 70 },
+  avgValue:     { color: COLORS.text, fontSize: 13, fontWeight: "700" },
+  avgDiff:      { fontSize: 11, fontWeight: "700" },
+
+  neighborSection: { borderTopWidth: 1, borderTopColor: COLORS.borderFaint, paddingTop: 12 },
+  neighborTitle:   { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", marginBottom: 8 },
+  neighborRow:     { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, marginBottom: 2 },
+  neighborRowCurrent: { backgroundColor: "rgba(99,102,241,0.1)" },
+  neighborName:    { color: COLORS.textMuted, fontSize: 12 },
+  neighborAvg:     { color: COLORS.text, fontSize: 12, fontWeight: "700" },
+
+  // 기존 스타일
   summaryCard: { borderWidth: 1, borderRadius: 16, padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   summaryLabel: { fontSize: 12, color: COLORS.textFaint, marginBottom: 2 },
   summaryPercent: { fontSize: 38, fontWeight: "900", lineHeight: 42 },

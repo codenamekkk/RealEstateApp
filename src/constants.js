@@ -60,6 +60,21 @@ export function getGrade(percent) {
   return               { label: "부적합 ❌",         color: "#ef4444" };
 }
 
+export function sqmToPyeong(sqm) {
+  return Math.round(parseFloat(sqm) / 3.3058);
+}
+
+export function formatPrice(manwon) {
+  const num = parseInt(String(manwon).replace(/,/g, ""));
+  if (isNaN(num) || num === 0) return "-";
+  if (num >= 10000) {
+    const eok = Math.floor(num / 10000);
+    const remain = num % 10000;
+    return remain > 0 ? `${eok}억 ${remain.toLocaleString()}만` : `${eok}억`;
+  }
+  return `${num.toLocaleString()}만`;
+}
+
 export function calcScore(property, activeCriteria) {
   const totalWeight = activeCriteria.reduce((s, c) => s + c.weight, 0);
   const totalScore  = activeCriteria.reduce((s, c) => {

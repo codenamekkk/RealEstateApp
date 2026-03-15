@@ -16,7 +16,11 @@ export default function useAppState() {
   // ── Local state ────────────────────────────────────────────
   const [localCriteria, setLocalCriteria] = useState(DEFAULT_CRITERIA);
   const [localProperties, setLocalProperties] = useState([
-    { id: 1, name: "매물 1", address: "", price: "", scores: {}, memo: "" },
+    { id: 1, name: "매물 1", address: "", price: "", scores: {}, memo: "",
+      lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
+      recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
+      pricePercentile: null, dongPercentile: null,
+      dongSummary: [], transactionHistory: [], neighborComparison: [] },
   ]);
 
   // ── Sharing state ──────────────────────────────────────────
@@ -265,7 +269,13 @@ export default function useAppState() {
 
   function addProperty() {
     const id = nextPropId.current++;
-    setLocalProperties(ps => [...ps, { id, name: `매물 ${id}`, address: "", price: "", scores: {}, memo: "" }]);
+    setLocalProperties(ps => [...ps, {
+      id, name: `매물 ${id}`, address: "", price: "", scores: {}, memo: "",
+      lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
+      recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
+      pricePercentile: null, dongPercentile: null,
+      dongSummary: [], transactionHistory: [], neighborComparison: [],
+    }]);
     return id;
   }
 

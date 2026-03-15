@@ -1,17 +1,21 @@
 // src/screens/CompareTab.js
 import React from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
-import { COLORS, calcScore, getGrade, getScoreColor } from "../constants";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { COLORS, calcScore, getGrade, getScoreColor, formatPrice } from "../constants";
+import { BarChart, LineChart } from "react-native-gifted-charts";
+import Svg, { Polygon, Circle, Line, Text as SvgText } from "react-native-svg";
+
+const SCREEN_WIDTH = Dimensions.get("window").width;
+const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
 function PropertyCard({ property, criteria, onPress, rank }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
-  const { percent, totalScore, max } = calcScore(property, activeCriteria);
+  const { percent } = calcScore(property, activeCriteria);
   const grade = getGrade(percent);
   const rankEmoji = rank === 0 ? "🥇" : rank === 1 ? "🥈" : rank === 2 ? "🥉" : null;
 
   return (
     <TouchableOpacity onPress={onPress} style={styles.card}>
-      {/* Rank + grade badge */}
       <View style={styles.cardTopRow}>
         {rankEmoji ? <Text style={styles.rankEmoji}>{rankEmoji}</Text> : <Text style={[styles.rankNum, { color: COLORS.textFaint }]}>{rank + 1}</Text>}
         <View style={{ flex: 1 }}>
@@ -24,6 +28,26 @@ function PropertyCard({ property, criteria, onPress, rank }) {
         </View>
       </View>
 
+      {/* 실거래 정보 */}
+      {property.recentPrice ? (
+        <View style={styles.txInfo}>
+          <View style={styles.txInfoItem}>
+            <Text style={styles.txInfoLabel}>최근 실거래</Text>
+            <Text style={styles.txInfoValue}>{formatPrice(property.recentPrice)}</Text>
+          </View>
+          <View style={styles.txInfoItem}>
+            <Text style={styles.txInfoLabel}>최고가</Text>
+            <Text style={[styles.txInfoValue, { color: "#f59e0b" }]}>{formatPrice(property.highestPrice)}</Text>
+          </View>
+          {property.pricePercentile != null && (
+            <View style={styles.txInfoItem}>
+              <Text style={styles.txInfoLabel}>구 내</Text>
+              <Text style={[styles.txInfoValue, { color: "#6366f1" }]}>상위 {property.pricePercentile}%</Text>
+            </View>
+          )}
+        </View>
+      ) : null}
+
       {/* Progress bar */}
       <View style={styles.barBg}>
         <View style={[styles.barFill, { width: `${percent}%`, backgroundColor: grade.color }]} />
@@ -33,6 +57,80 @@ function PropertyCard({ property, criteria, onPress, rank }) {
         <Text style={[styles.percentText, { color: grade.color }]}>{percent}%</Text>
       </View>
     </TouchableOpacity>
+  );
+}
+
+// 레이더 차트 컴포넌트
+function RadarChart({ properties, criteria }) {
+  const activeCriteria = criteria.filter(c => !c.hidden);
+  if (activeCriteria.length < 3 || properties.length === 0) return null;
+
+  const axes = activeCriteria.slice(0, 8); // 최대 8축
+  const size = SCREEN_WIDTH - 80;
+  const cx = size / 2, cy = size / 2;
+  const maxR = size / 2 - 30;
+  const levels = 5;
+
+  const angleStep = (2 * Math.PI) / axes.length;
+
+  const getPoint = (index, value) => {
+    const angle = (index * angleStep) - Math.PI / 2;
+    const r = (value / 5) * maxR;
+    return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  };
+
+  return (
+    <View style={styles.chartCard}>
+      <Text style={styles.chartTitle}>🎯 종합 비교</Text>
+      <Svg width={size} height={size + 20}>
+        {/* 배경 격자 */}
+        {Array.from({ length: levels }, (_, i) => {
+          const r = ((i + 1) / levels) * maxR;
+          const points = axes.map((_, j) => {
+            const angle = (j * angleStep) - Math.PI / 2;
+            return `${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`;
+          }).join(" ");
+          return <Polygon key={i} points={points} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={1} />;
+        })}
+
+        {/* 축 선 */}
+        {axes.map((_, i) => {
+          const p = getPoint(i, 5);
+          return <Line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="rgba(255,255,255,0.08)" strokeWidth={1} />;
+        })}
+
+        {/* 데이터 다각형 */}
+        {properties.slice(0, 4).map((prop, pi) => {
+          const points = axes.map((c, i) => {
+            const score = prop.scores[c.id] || 0;
+            const p = getPoint(i, score);
+            return `${p.x},${p.y}`;
+          }).join(" ");
+          return (
+            <Polygon key={pi} points={points}
+              fill={CHART_COLORS[pi] + "22"} stroke={CHART_COLORS[pi]} strokeWidth={2} />
+          );
+        })}
+
+        {/* 축 라벨 */}
+        {axes.map((c, i) => {
+          const p = getPoint(i, 5.8);
+          return (
+            <SvgText key={i} x={p.x} y={p.y} textAnchor="middle" alignmentBaseline="middle"
+              fill={COLORS.textFaint} fontSize={10}>{c.name.slice(0, 4)}</SvgText>
+          );
+        })}
+      </Svg>
+      {/* 범례 */}
+      <View style={styles.legendRow}>
+        {properties.slice(0, 4).map((p, i) => (
+          <View key={i} style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[i] }]} />
+            <Text style={styles.legendText}>{(p.name || "").slice(0, 6)}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
   );
 }
 
@@ -58,6 +156,33 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
     );
   }
 
+  // 실거래 데이터가 있는 매물
+  const propsWithTx = sorted.filter(p => p.recentPrice);
+
+  // 막대 차트 데이터
+  const barData = propsWithTx.length >= 2 ? propsWithTx.slice(0, 4).flatMap((p, i) => [
+    { value: (p.recentPrice || 0) / 10000, label: i === 0 ? (p.name || "").slice(0, 3) : "", frontColor: CHART_COLORS[i], spacing: 2 },
+    { value: (p.highestPrice || 0) / 10000, frontColor: CHART_COLORS[i] + "88", spacing: 2 },
+    { value: (p.regionAvg || 0) / 10000, frontColor: "#ffffff33", spacing: i < propsWithTx.length - 1 ? 20 : 0 },
+  ]) : [];
+
+  // 꺾은선 차트 데이터
+  const hasLineData = propsWithTx.some(p => p.transactionHistory && p.transactionHistory.length > 1);
+  let lineDataSets = [];
+  if (hasLineData) {
+    lineDataSets = propsWithTx.slice(0, 3).map((p, i) => {
+      const txs = [...(p.transactionHistory || [])].reverse().slice(-12);
+      return {
+        data: txs.map((t, j) => ({
+          value: t.dealAmount / 10000,
+          label: j % 3 === 0 ? t.dealDate.slice(2, 7) : "",
+        })),
+        color: CHART_COLORS[i],
+        name: p.name,
+      };
+    }).filter(ds => ds.data.length > 1);
+  }
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.sectionTitle}>📈 점수 높은 순으로 정렬</Text>
@@ -68,6 +193,84 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
           onPress={() => onGoToScore(p.id)}
         />
       ))}
+
+      {/* 가격 비교 막대 차트 */}
+      {barData.length > 0 && (
+        <View style={styles.chartCard}>
+          <Text style={styles.chartTitle}>📊 가격 비교 (억원)</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <BarChart
+              data={barData}
+              barWidth={18}
+              noOfSections={5}
+              barBorderRadius={4}
+              yAxisTextStyle={{ color: COLORS.textFaint, fontSize: 10 }}
+              xAxisLabelTextStyle={{ color: COLORS.textMuted, fontSize: 10 }}
+              xAxisColor="rgba(255,255,255,0.08)"
+              yAxisColor="rgba(255,255,255,0.08)"
+              backgroundColor="transparent"
+              hideRules
+              width={Math.max(SCREEN_WIDTH - 100, propsWithTx.length * 100)}
+              height={180}
+            />
+          </ScrollView>
+          <View style={styles.legendRow}>
+            {propsWithTx.slice(0, 4).map((p, i) => (
+              <View key={i} style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[i] }]} />
+                <Text style={styles.legendText}>{(p.name || "").slice(0, 6)}</Text>
+              </View>
+            ))}
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: "#ffffff33" }]} />
+              <Text style={styles.legendText}>구 평균</Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtext}>진한색: 최근 거래 / 연한색: 최고가 / 회색: 구 평균</Text>
+        </View>
+      )}
+
+      {/* 시세 추이 꺾은선 차트 */}
+      {lineDataSets.length > 0 && (
+        <View style={styles.chartCard}>
+          <Text style={styles.chartTitle}>📈 시세 추이 (억원)</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <LineChart
+              data={lineDataSets[0]?.data || []}
+              data2={lineDataSets[1]?.data}
+              data3={lineDataSets[2]?.data}
+              color1={lineDataSets[0] ? CHART_COLORS[0] : "transparent"}
+              color2={lineDataSets[1] ? CHART_COLORS[1] : "transparent"}
+              color3={lineDataSets[2] ? CHART_COLORS[2] : "transparent"}
+              dataPointsColor1={CHART_COLORS[0]}
+              dataPointsColor2={CHART_COLORS[1]}
+              dataPointsColor3={CHART_COLORS[2]}
+              curved
+              thickness={2}
+              noOfSections={5}
+              yAxisTextStyle={{ color: COLORS.textFaint, fontSize: 10 }}
+              xAxisLabelTextStyle={{ color: COLORS.textFaint, fontSize: 9 }}
+              xAxisColor="rgba(255,255,255,0.08)"
+              yAxisColor="rgba(255,255,255,0.08)"
+              backgroundColor="transparent"
+              hideRules
+              width={Math.max(SCREEN_WIDTH - 100, 250)}
+              height={180}
+            />
+          </ScrollView>
+          <View style={styles.legendRow}>
+            {lineDataSets.map((ds, i) => (
+              <View key={i} style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[i] }]} />
+                <Text style={styles.legendText}>{(ds.name || "").slice(0, 6)}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {/* 레이더 차트 */}
+      <RadarChart properties={sorted} criteria={criteria} />
 
       {/* Detail comparison table */}
       <Text style={[styles.sectionTitle, { marginTop: 24 }]}>📋 항목별 상세 비교</Text>
@@ -145,10 +348,28 @@ const styles = StyleSheet.create({
   propPrice:       { fontSize: 12, color: "#818cf8", fontWeight: "700", marginTop: 2 },
   gradeBadge:      { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 3 },
   gradeBadgeText:  { fontSize: 11, fontWeight: "700" },
+
+  // 실거래 정보
+  txInfo:        { flexDirection: "row", gap: 12, marginBottom: 10, paddingHorizontal: 4 },
+  txInfoItem:    { flex: 1 },
+  txInfoLabel:   { color: COLORS.textFaint, fontSize: 10, marginBottom: 2 },
+  txInfoValue:   { color: COLORS.text, fontSize: 12, fontWeight: "700" },
+
   barBg:           { height: 6, backgroundColor: "#1e1e2e", borderRadius: 10, overflow: "hidden" },
   barFill:         { height: "100%", borderRadius: 10 },
   subText:         { fontSize: 11, color: COLORS.textFaint },
   percentText:     { fontSize: 16, fontWeight: "800" },
+
+  // 차트
+  chartCard:     { backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, padding: 16, marginBottom: 16, marginTop: 8 },
+  chartTitle:    { fontSize: 13, fontWeight: "700", color: COLORS.textMuted, marginBottom: 12 },
+  chartSubtext:  { color: COLORS.textFaint, fontSize: 10, textAlign: "center", marginTop: 8 },
+  legendRow:     { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 12, marginTop: 10 },
+  legendItem:    { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot:     { width: 8, height: 8, borderRadius: 4 },
+  legendText:    { color: COLORS.textFaint, fontSize: 10 },
+
+  // 테이블
   table:             { backgroundColor: "rgba(255,255,255,0.02)", borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, overflow: "hidden" },
   tableLabelColumn:  { width: 100, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.06)" },
   tableLabelCellBox: { paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)", justifyContent: "center" },
