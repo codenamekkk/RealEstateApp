@@ -237,7 +237,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <TextInput
                   value={selectedProp.name}
                   onChangeText={handleNameChange}
-                  placeholder="아파트명 또는 동 이름 검색 (예: 한신, 청량리동)"
+                  placeholder="아파트명, 동 이름, 도로명주소 검색"
                   placeholderTextColor={COLORS.textFaint}
                   style={styles.nameInput}
                 />

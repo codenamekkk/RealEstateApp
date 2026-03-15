@@ -112,6 +112,7 @@ const KREB_API_KEY = process.env.KREB_API_KEY || "";
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
 const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
 const MOLIT_HOUSING_API_KEY = process.env.MOLIT_HOUSING_API_KEY || "";
+const JUSO_API_KEY = process.env.JUSO_API_KEY || "";
 
 if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
@@ -385,7 +386,44 @@ app.get("/api/search/apartment", async (req, res) => {
   if (!KREB_API_KEY) return res.status(503).json({ error: "KREB API 키 미설정" });
 
   try {
-    // 이름 검색과 주소 검색을 동시에 수행하여 합침
+    // 도로명주소 패턴 감지 (로, 길, 대로 + 숫자)
+    const isRoadName = /(?:로|길|대로)\s*\d/.test(query);
+
+    // 1. 도로명주소 검색 (juso.go.kr)
+    let jusoResults = [];
+    if (isRoadName && JUSO_API_KEY) {
+      try {
+        const jusoUrl = `https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${JUSO_API_KEY}&keyword=${encodeURIComponent(query)}&resultType=json&countPerPage=10&currentPage=1`;
+        const jusoRes = await fetch(jusoUrl, { timeout: 10000 });
+        const jusoData = await jusoRes.json();
+        const jusos = jusoData?.results?.juso || [];
+        // 아파트만 필터 (bdNm에 값이 있는 항목)
+        for (const j of jusos) {
+          if (!j.bdNm) continue;
+          // 지번주소로 KREB 검색
+          const jibunDong = j.emdNm || "";
+          const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
+          const condAddr = encodeURIComponent("cond[주소::LIKE]") + "=" + encodeURIComponent(jibunDong);
+          const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(j.bdNm.replace(/아파트|단지/g, "").trim());
+          const krebUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=5&${condType}&${condAddr}&${condName}`;
+          const krebRes = await fetch(krebUrl, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] }));
+          for (const item of (krebRes.data || [])) {
+            jusoResults.push({
+              aptName: (item["단지명_공시가격"] || "").trim(),
+              address: (item["주소"] || "").trim(),
+              buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
+              units: parseInt(item["세대수"]) || null,
+              buildings: parseInt(item["동수"]) || null,
+              complexId: item["단지고유번호"] || null,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("[JUSO] 도로명주소 검색 실패:", e.message);
+      }
+    }
+
+    // 2. KREB 이름/지번주소 검색 (기존)
     const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
     const baseUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=15&${condType}`;
 
@@ -397,21 +435,26 @@ app.get("/api/search/apartment", async (req, res) => {
       fetch(`${baseUrl}&${condAddr}`, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] })),
     ]);
 
+    // 3. 결과 합침 (도로명 결과 우선)
     const seen = new Set();
-    const merged = [...(nameRes.data || []), ...(addrRes.data || [])];
-    const results = [];
-    for (const item of merged) {
-      const id = item["단지고유번호"];
-      if (seen.has(id)) continue;
-      seen.add(id);
-      results.push({
+    const allItems = [...jusoResults];
+    for (const item of [...(nameRes.data || []), ...(addrRes.data || [])]) {
+      allItems.push({
         aptName: (item["단지명_공시가격"] || "").trim(),
         address: (item["주소"] || "").trim(),
         buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
         units: parseInt(item["세대수"]) || null,
         buildings: parseInt(item["동수"]) || null,
-        complexId: id || null,
+        complexId: item["단지고유번호"] || null,
       });
+    }
+
+    const results = [];
+    for (const item of allItems) {
+      const id = item.complexId;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      results.push(item);
       if (results.length >= 20) break;
     }
     res.json(results);
