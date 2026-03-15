@@ -543,12 +543,12 @@ const styles = StyleSheet.create({
   // 실거래 테이블
   txTable:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, overflow: "hidden" },
   txRow:     { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: COLORS.borderFaint },
-  txRowAlt:  { backgroundColor: "rgba(255,255,255,0.02)" },
+  txRowAlt:  { backgroundColor: "rgba(255,255,255,0.04)" },
   txCell:    { paddingHorizontal: 6, paddingVertical: 8, alignItems: "center", justifyContent: "center" },
-  txHeader:  { backgroundColor: "rgba(255,255,255,0.05)" },
-  txData:    { },
-  txPrice:   { },
-  txHighest: { },
+  txHeader:  { backgroundColor: "rgba(255,255,255,0.08)", fontWeight: "700", color: COLORS.textMuted, fontSize: 11 },
+  txData:    { color: COLORS.text, fontSize: 11 },
+  txPrice:   { color: "#22c55e", fontWeight: "600" },
+  txHighest: { color: "#f59e0b", fontWeight: "600" },
 
   // 지역 시세 분석
   percentileSection: { marginBottom: 14 },
