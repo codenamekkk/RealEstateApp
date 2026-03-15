@@ -35,8 +35,8 @@ export async function getRegionalAnalysis(lawdCd, umdNm, area, price) {
   return res.json();
 }
 
-export async function getComplexInfo(lawdCd, address) {
-  const res = await fetch(`${SERVER_URL}/api/apartment/complex-info?lawdCd=${lawdCd}&address=${encodeURIComponent(address)}`);
+export async function getComplexInfo(lawdCd, address, aptName) {
+  const res = await fetch(`${SERVER_URL}/api/apartment/complex-info?lawdCd=${lawdCd}&address=${encodeURIComponent(address)}&aptName=${encodeURIComponent(aptName || "")}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "단지 정보 조회 실패");

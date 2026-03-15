@@ -69,10 +69,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     } catch { setAreas([]); }
   }
 
-  async function loadComplexInfo(lawdCd, address) {
+  async function loadComplexInfo(lawdCd, address, aptName) {
     setComplexInfoLoading(true);
     try {
-      const info = await getComplexInfo(lawdCd, address);
+      const info = await getComplexInfo(lawdCd, address, aptName);
       updateProp(selectedProp.id, "complexInfo", info);
     } catch (e) {
       console.warn("단지 정보 조회 실패:", e.message);
@@ -140,7 +140,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
       // 건축물대장 단지 정보 조회 (병렬)
       const txPromise = loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
-      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address);
+      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address, item.aptName);
       await Promise.all([txPromise, complexPromise]);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
@@ -349,7 +349,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             </View>
           ) : selectedProp.complexInfo ? (
             <View style={styles.card}>
-              <Text style={styles.sectionTitle}>건축물대장 단지 정보</Text>
+              <Text style={styles.sectionTitle}>단지 정보</Text>
               <View style={styles.complexGrid}>
                 <View style={styles.complexRow}>
                   <View style={styles.complexItem}>
@@ -393,6 +393,52 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     <Text style={styles.complexValue}>{selectedProp.complexInfo.useAprDate || "-"}</Text>
                   </View>
                 </View>
+                {(selectedProp.complexInfo.heatType || selectedProp.complexInfo.constructor) && (
+                  <View style={styles.complexRow}>
+                    {selectedProp.complexInfo.heatType && (
+                      <View style={styles.complexItem}>
+                        <Text style={styles.complexLabel}>난방</Text>
+                        <Text style={styles.complexValue}>{selectedProp.complexInfo.heatType}</Text>
+                      </View>
+                    )}
+                    {selectedProp.complexInfo.constructor && (
+                      <View style={styles.complexItem}>
+                        <Text style={styles.complexLabel}>건설사</Text>
+                        <Text style={styles.complexValue}>{selectedProp.complexInfo.constructor}</Text>
+                      </View>
+                    )}
+                    {selectedProp.complexInfo.hallType && (
+                      <View style={styles.complexItem}>
+                        <Text style={styles.complexLabel}>복도유형</Text>
+                        <Text style={styles.complexValue}>{selectedProp.complexInfo.hallType}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+                {(selectedProp.complexInfo.manageTel || selectedProp.complexInfo.doroJuso) && (
+                  <View style={styles.complexRow}>
+                    {selectedProp.complexInfo.manageTel && (
+                      <View style={[styles.complexItem, { flex: 1.5 }]}>
+                        <Text style={styles.complexLabel}>관리사무소</Text>
+                        <Text style={styles.complexValue}>{selectedProp.complexInfo.manageTel}</Text>
+                      </View>
+                    )}
+                    {selectedProp.complexInfo.manageType && (
+                      <View style={styles.complexItem}>
+                        <Text style={styles.complexLabel}>관리방식</Text>
+                        <Text style={styles.complexValue}>{selectedProp.complexInfo.manageType}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+                {selectedProp.complexInfo.doroJuso && (
+                  <View style={styles.complexRow}>
+                    <View style={[styles.complexItem, { flex: 1 }]}>
+                      <Text style={styles.complexLabel}>도로명주소</Text>
+                      <Text style={[styles.complexValue, { fontSize: 11 }]}>{selectedProp.complexInfo.doroJuso}</Text>
+                    </View>
+                  </View>
+                )}
               </View>
               {selectedProp.complexInfo.exclusiveAreas && selectedProp.complexInfo.exclusiveAreas.length > 0 && (
                 <View style={styles.complexAreasSection}>

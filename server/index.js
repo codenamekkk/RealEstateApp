@@ -111,6 +111,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_dong_codes_nm ON dong_codes(sigungu_cd, 
 const KREB_API_KEY = process.env.KREB_API_KEY || "";
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
 const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
+const MOLIT_HOUSING_API_KEY = process.env.MOLIT_HOUSING_API_KEY || "";
 
 if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
@@ -642,6 +643,50 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
 // ── 건축물대장 API (Building Registry) ──────────────────────────────
 
 const BUILDING_API_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService";
+const HOUSING_API_BASE = "https://apis.data.go.kr/1613000";
+
+/**
+ * 단지목록 API: 법정동코드 10자리로 kaptCode 조회
+ */
+async function findKaptCode(bjdCode10, aptName) {
+  if (!MOLIT_HOUSING_API_KEY) return null;
+  try {
+    const url = `${HOUSING_API_BASE}/AptListService3/getLegaldongAptList3?serviceKey=${MOLIT_HOUSING_API_KEY}&bjdCode=${bjdCode10}&pageNo=1&numOfRows=50`;
+    const res = await fetch(url, { timeout: 10000 });
+    const data = await res.json();
+    const items = data?.response?.body?.items;
+    if (!items || !Array.isArray(items)) return null;
+
+    // 이름 매칭
+    const cleanName = aptName.replace(/아파트|단지|APT/gi, "").trim();
+    const match = items.find(it =>
+      it.kaptName && (
+        it.kaptName.includes(cleanName) ||
+        cleanName.includes(it.kaptName.replace(/^[가-힣]+(?:시|구|동)/, ""))
+      )
+    );
+    return match ? match.kaptCode : null;
+  } catch (e) {
+    console.error("[HOUSING] 단지목록 조회 실패:", e.message);
+    return null;
+  }
+}
+
+/**
+ * 공동주택 기본정보 API: kaptCode로 상세정보 조회
+ */
+async function fetchHousingBasicInfo(kaptCode) {
+  if (!MOLIT_HOUSING_API_KEY || !kaptCode) return null;
+  try {
+    const url = `${HOUSING_API_BASE}/AptBasisInfoServiceV4/getAphusBassInfoV4?ServiceKey=${MOLIT_HOUSING_API_KEY}&kaptCode=${kaptCode}`;
+    const res = await fetch(url, { timeout: 10000 });
+    const data = await res.json();
+    return data?.response?.body?.item || null;
+  } catch (e) {
+    console.error("[HOUSING] 기본정보 조회 실패:", e.message);
+    return null;
+  }
+}
 
 /**
  * 주소 파싱: KREB 주소에서 동이름, 번지를 추출
@@ -790,11 +835,16 @@ app.get("/api/apartment/complex-info", async (req, res) => {
 
     console.log(`[COMPLEX] bjdongCd 확인: ${bjdongCd}`);
 
-    // 표제부 + 전유면적 동시 조회
-    const [titleItems, areaItems] = await Promise.all([
+    // 표제부 + 전유면적 + 공동주택 기본정보 동시 조회
+    const bjdCode10 = lawdCd + bjdongCd;
+    const [titleItems, areaItems, kaptCode] = await Promise.all([
       fetchBuildingTitle(lawdCd, bjdongCd, bun, ji),
       fetchBuildingArea(lawdCd, bjdongCd, bun, ji),
+      findKaptCode(bjdCode10, req.query.aptName || ""),
     ]);
+
+    // kaptCode로 공동주택 기본정보 조회
+    const housingInfo = kaptCode ? await fetchHousingBasicInfo(kaptCode) : null;
 
     if (titleItems.length === 0) {
       return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
@@ -871,6 +921,14 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       useAprDate,
       totArea: Math.round(totArea * 100) / 100,
       exclusiveAreas: areaList,
+      // 공동주택 기본정보 (단지목록 API에서 조회)
+      heatType: housingInfo?.codeHeatNm || null,
+      constructor: housingInfo?.kaptBcompany || null,
+      developer: housingInfo?.kaptAcompany || null,
+      manageTel: housingInfo?.kaptTel ? housingInfo.kaptTel.replace(/(\d{2,3})(\d{3,4})(\d{4})/, "$1-$2-$3") : null,
+      manageType: housingInfo?.codeMgrNm || null,
+      hallType: housingInfo?.codeHallNm || null,
+      doroJuso: housingInfo?.doroJuso || null,
     };
 
     console.log(`[COMPLEX] 결과: ${titleItems.length}개동, 최고${maxFloor}층, 용적률${vlRat}%`);
