@@ -299,7 +299,7 @@ app.delete("/api/share-requests/:id", (req, res) => {
 
 // ── 국토교통부 API 연동 ────────────────────────────────────────────
 async function fetchMolitData(lawdCd, dealYmd) {
-  const url = `http://openapi.molit.go.kr/OpenAPI_ToolInstallPackage/service/rest/RTMSOBJSvc/getRTMSDataSvcAptTradeDev?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
+  const url = `http://openapi.molit.go.kr:8081/OpenAPI_ToolInstallPackage/service/rest/RTMSOBJSvc/getRTMSDataSvcAptTrade?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
   const res = await fetch(url, { timeout: 15000 });
   const xml = await res.text();
   const json = xmlParser.parse(xml);
