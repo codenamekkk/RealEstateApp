@@ -300,11 +300,16 @@ app.delete("/api/share-requests/:id", (req, res) => {
 // ── 국토교통부 API 연동 ────────────────────────────────────────────
 async function fetchMolitData(lawdCd, dealYmd) {
   const url = `http://openapi.molit.go.kr:8081/OpenAPI_ToolInstallPackage/service/rest/RTMSOBJSvc/getRTMSDataSvcAptTrade?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
+  console.log("[MOLIT] 요청:", url.replace(MOLIT_API_KEY, "***KEY***"));
   const res = await fetch(url, { timeout: 15000 });
   const xml = await res.text();
+  console.log("[MOLIT] 응답 상태:", res.status, "길이:", xml.length, "앞부분:", xml.slice(0, 300));
   const json = xmlParser.parse(xml);
   const items = json?.response?.body?.items?.item;
-  if (!items) return [];
+  if (!items) {
+    console.log("[MOLIT] items 없음. 파싱 결과:", JSON.stringify(json).slice(0, 500));
+    return [];
+  }
   return Array.isArray(items) ? items : [items];
 }
 
@@ -518,8 +523,8 @@ app.get("/api/apartment/transactions", async (req, res) => {
       dongSummary: Object.values(dongMap),
     });
   } catch (e) {
-    console.error("실거래 조회 실패:", e.message);
-    res.status(500).json({ error: "실거래 조회 실패" });
+    console.error("실거래 조회 실패:", e.message, e.stack);
+    res.status(500).json({ error: "실거래 조회 실패", detail: e.message });
   }
 });
 
