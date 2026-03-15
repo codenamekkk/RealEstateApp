@@ -45,6 +45,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [selectedArea, setSelectedArea] = useState("전체");
   const [transactionLoading, setTransactionLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [dataCollecting, setDataCollecting] = useState(false);
 
   // 매물 변경 시 상태 리셋
   useEffect(() => {
@@ -105,6 +106,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   async function handleSelectApartment(item) {
     setShowDropdown(false);
     setSearchResults([]);
+    setDataCollecting(true);
     updateProp(selectedProp.id, "name", item.aptName);
     updateProp(selectedProp.id, "address", item.address);
     if (item.buildYear) {
@@ -125,6 +127,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       await loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
+    } finally {
+      setDataCollecting(false);
     }
   }
 
@@ -264,6 +268,14 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               placeholderTextColor={COLORS.textFaint}
               style={[styles.addressInput, { opacity: 0.7 }]}
             />
+
+            {dataCollecting && (
+              <View style={styles.collectingBox}>
+                <ActivityIndicator size="small" color={COLORS.primary} />
+                <Text style={styles.collectingText}>해당 매물 정보 수집 중...</Text>
+              </View>
+            )}
+
             <View style={styles.priceRow}>
               <TextInput
                 value={selectedProp.price ? Number(selectedProp.price).toLocaleString() : ""}
@@ -527,6 +539,8 @@ const styles = StyleSheet.create({
   dropdownName:  { color: COLORS.text, fontSize: 13, fontWeight: "700" },
   dropdownAddr:  { color: COLORS.textFaint, fontSize: 11, marginTop: 2 },
   dropdownMeta:  { color: COLORS.textFaint, fontSize: 10, marginTop: 1 },
+  collectingBox: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 14, marginBottom: 8, backgroundColor: COLORS.primary + "15", borderRadius: 10 },
+  collectingText:{ color: COLORS.primary, fontSize: 13, fontWeight: "600", marginLeft: 10 },
 
   // 평수 선택
   areaSection: { marginBottom: 16 },

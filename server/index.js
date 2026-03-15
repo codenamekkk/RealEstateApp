@@ -451,9 +451,7 @@ app.get("/api/apartment/areas", async (req, res) => {
 
   try {
     const months = getMonthRange(6);
-    for (const ym of months) {
-      await ensureCached(lawdCd, ym);
-    }
+    await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     let areaQuery = `
@@ -488,9 +486,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
   try {
     const numMonths = parseInt(monthsStr) || 12;
     const monthList = getMonthRange(numMonths);
-    for (const ym of monthList) {
-      await ensureCached(lawdCd, ym);
-    }
+    await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
@@ -567,9 +563,7 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const areaNum = parseFloat(area);
     const priceNum = parseInt(price);
     const months = getMonthRange(12);
-    for (const ym of months) {
-      await ensureCached(lawdCd, ym);
-    }
+    await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
     // 구 내 동일 평수 모든 거래
     const guRows = db.prepare(`
