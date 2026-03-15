@@ -439,11 +439,13 @@ app.get("/api/apartment/areas", async (req, res) => {
       await ensureCached(lawdCd, ym);
     }
 
+    // "아파트","단지" 등 접미사 제거 후 LIKE 매칭
+    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     const rows = db.prepare(`
       SELECT DISTINCT exclu_use_ar FROM transaction_cache
-      WHERE lawd_cd = ? AND apt_nm = ?
+      WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')
       ORDER BY exclu_use_ar
-    `).all(lawdCd, aptNm);
+    `).all(lawdCd, cleanName, `${cleanName}%`, cleanName);
 
     const areas = rows.map(r => ({
       area: r.exclu_use_ar,
@@ -469,8 +471,9 @@ app.get("/api/apartment/transactions", async (req, res) => {
       await ensureCached(lawdCd, ym);
     }
 
-    let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?`;
-    const params = [lawdCd, aptNm];
+    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
+    let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
+    const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
 
     if (area && area !== "전체") {
       const areaNum = parseFloat(area);
