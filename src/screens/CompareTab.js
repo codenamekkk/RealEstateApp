@@ -1,31 +1,8 @@
 // src/screens/CompareTab.js
-import React, { lazy, Suspense } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
+import React from "react";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { COLORS, calcScore, getGrade, getScoreColor, formatPrice } from "../constants";
-
-// Lazy load chart libraries to prevent crash on startup
-let BarChart, LineChart, Svg, Polygon, Circle, Line, SvgText;
-let chartsLoaded = false;
-
-function loadCharts() {
-  if (chartsLoaded) return true;
-  try {
-    const gifted = require("react-native-gifted-charts");
-    BarChart = gifted.BarChart;
-    LineChart = gifted.LineChart;
-    const svg = require("react-native-svg");
-    Svg = svg.default || svg.Svg;
-    Polygon = svg.Polygon;
-    Circle = svg.Circle;
-    Line = svg.Line;
-    SvgText = svg.Text;
-    chartsLoaded = true;
-    return true;
-  } catch (e) {
-    console.warn("차트 라이브러리 로드 실패:", e.message);
-    return false;
-  }
-}
+import Svg, { Polygon, Line, Text as SvgText, Rect, Circle, Polyline } from "react-native-svg";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
@@ -34,7 +11,10 @@ function PropertyCard({ property, criteria, onPress, rank }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
   const { percent } = calcScore(property, activeCriteria);
   const grade = getGrade(percent);
-  const rankEmoji = rank === 0 ? "🥇" : rank === 1 ? "🥈" : rank === 2 ? "🥉" : null;
+  const rankEmoji = rank === 0 ? "\u{1F947}" : rank === 1 ? "\u{1F948}" : rank === 2 ? "\u{1F949}" : null;
+
+  // 등급 라벨에서 이모지 제거 (안전한 방식)
+  const gradeText = grade.label.replace(/[^\p{L}\p{N}\s]/gu, "").trim();
 
   return (
     <TouchableOpacity onPress={onPress} style={styles.card}>
@@ -46,7 +26,7 @@ function PropertyCard({ property, criteria, onPress, rank }) {
           {property.price ? <Text style={styles.propPrice}>{Number(property.price).toLocaleString()}원</Text> : null}
         </View>
         <View style={[styles.gradeBadge, { backgroundColor: grade.color + "22" }]}>
-          <Text style={[styles.gradeBadgeText, { color: grade.color }]}>{grade.label.replace(/ [^\w]/u, "")}</Text>
+          <Text style={[styles.gradeBadgeText, { color: grade.color }]}>{gradeText}</Text>
         </View>
       </View>
 
@@ -82,18 +62,150 @@ function PropertyCard({ property, criteria, onPress, rank }) {
   );
 }
 
+// 순수 View 기반 막대 차트
+function SimpleBarChart({ properties }) {
+  if (properties.length === 0) return null;
+  const allValues = properties.flatMap(p => [p.recentPrice || 0, p.highestPrice || 0, p.regionAvg || 0]);
+  const maxVal = Math.max(...allValues, 1);
+  const barHeight = 160;
+
+  return (
+    <View style={styles.chartCard}>
+      <Text style={styles.chartTitle}>가격 비교 (만원)</Text>
+      <View style={{ flexDirection: "row", alignItems: "flex-end", height: barHeight, paddingHorizontal: 8, gap: 12 }}>
+        {properties.slice(0, 4).map((p, i) => {
+          const recent = p.recentPrice || 0;
+          const highest = p.highestPrice || 0;
+          const avg = p.regionAvg || 0;
+          return (
+            <View key={p.id} style={{ flex: 1, alignItems: "center", gap: 2 }}>
+              <View style={{ flexDirection: "row", alignItems: "flex-end", height: barHeight - 20, gap: 2, width: "100%" }}>
+                {/* 최근 거래가 */}
+                <View style={{ flex: 1, justifyContent: "flex-end", alignItems: "center" }}>
+                  <Text style={{ color: COLORS.textFaint, fontSize: 8, marginBottom: 2 }}>{formatPrice(recent)}</Text>
+                  <View style={{ width: "100%", height: maxVal > 0 ? (recent / maxVal) * (barHeight - 40) : 0, backgroundColor: CHART_COLORS[i], borderRadius: 3 }} />
+                </View>
+                {/* 최고가 */}
+                <View style={{ flex: 1, justifyContent: "flex-end", alignItems: "center" }}>
+                  <Text style={{ color: COLORS.textFaint, fontSize: 8, marginBottom: 2 }}>{formatPrice(highest)}</Text>
+                  <View style={{ width: "100%", height: maxVal > 0 ? (highest / maxVal) * (barHeight - 40) : 0, backgroundColor: CHART_COLORS[i] + "88", borderRadius: 3 }} />
+                </View>
+                {/* 구 평균 */}
+                <View style={{ flex: 1, justifyContent: "flex-end", alignItems: "center" }}>
+                  <Text style={{ color: COLORS.textFaint, fontSize: 8, marginBottom: 2 }}>{formatPrice(avg)}</Text>
+                  <View style={{ width: "100%", height: maxVal > 0 ? (avg / maxVal) * (barHeight - 40) : 0, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 3 }} />
+                </View>
+              </View>
+              <Text style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 4 }} numberOfLines={1}>{(p.name || "").slice(0, 5)}</Text>
+            </View>
+          );
+        })}
+      </View>
+      <View style={styles.legendRow}>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[0] }]} />
+          <Text style={styles.legendText}>최근 거래</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[0] + "88" }]} />
+          <Text style={styles.legendText}>최고가</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: "rgba(255,255,255,0.15)" }]} />
+          <Text style={styles.legendText}>구 평균</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// SVG 기반 꺾은선 차트
+function SimpleLineChart({ dataSets }) {
+  if (dataSets.length === 0) return null;
+
+  const chartW = SCREEN_WIDTH - 80;
+  const chartH = 160;
+  const padL = 45, padR = 10, padT = 10, padB = 30;
+  const drawW = chartW - padL - padR;
+  const drawH = chartH - padT - padB;
+
+  const allValues = dataSets.flatMap(ds => ds.data.map(d => d.value));
+  const minVal = Math.min(...allValues) * 0.95;
+  const maxVal = Math.max(...allValues) * 1.05;
+  const range = maxVal - minVal || 1;
+
+  const maxPoints = Math.max(...dataSets.map(ds => ds.data.length));
+
+  return (
+    <View style={styles.chartCard}>
+      <Text style={styles.chartTitle}>시세 추이 (억원)</Text>
+      <Svg width={chartW} height={chartH}>
+        {/* Y축 가이드 */}
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
+          const y = padT + drawH * (1 - ratio);
+          const val = (minVal + range * ratio) / 10000;
+          return (
+            <React.Fragment key={i}>
+              <Line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+              <SvgText x={padL - 5} y={y + 3} textAnchor="end" fill={COLORS.textFaint} fontSize={9}>
+                {val.toFixed(1)}
+              </SvgText>
+            </React.Fragment>
+          );
+        })}
+
+        {/* 데이터 라인 */}
+        {dataSets.map((ds, si) => {
+          const points = ds.data.map((d, i) => {
+            const x = padL + (maxPoints > 1 ? (i / (maxPoints - 1)) * drawW : drawW / 2);
+            const y = padT + drawH - ((d.value - minVal) / range) * drawH;
+            return `${x},${y}`;
+          }).join(" ");
+          return (
+            <React.Fragment key={si}>
+              <Polyline points={points} fill="none" stroke={ds.color} strokeWidth={2} />
+              {ds.data.map((d, i) => {
+                const x = padL + (maxPoints > 1 ? (i / (maxPoints - 1)) * drawW : drawW / 2);
+                const y = padT + drawH - ((d.value - minVal) / range) * drawH;
+                return <Circle key={i} cx={x} cy={y} r={3} fill={ds.color} />;
+              })}
+            </React.Fragment>
+          );
+        })}
+
+        {/* X축 라벨 */}
+        {dataSets[0].data.map((d, i) => {
+          if (i % Math.ceil(maxPoints / 6) !== 0 && i !== maxPoints - 1) return null;
+          const x = padL + (maxPoints > 1 ? (i / (maxPoints - 1)) * drawW : drawW / 2);
+          return (
+            <SvgText key={i} x={x} y={chartH - 5} textAnchor="middle" fill={COLORS.textFaint} fontSize={9}>
+              {d.label || ""}
+            </SvgText>
+          );
+        })}
+      </Svg>
+      <View style={styles.legendRow}>
+        {dataSets.map((ds, i) => (
+          <View key={i} style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: ds.color }]} />
+            <Text style={styles.legendText}>{(ds.name || "").slice(0, 6)}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 // 레이더 차트 컴포넌트
 function RadarChart({ properties, criteria }) {
   const activeCriteria = criteria.filter(c => !c.hidden);
   if (activeCriteria.length < 3 || properties.length === 0) return null;
-  if (!loadCharts()) return null;
 
-  const axes = activeCriteria.slice(0, 8); // 최대 8축
+  const axes = activeCriteria.slice(0, 8);
   const size = SCREEN_WIDTH - 80;
   const cx = size / 2, cy = size / 2;
   const maxR = size / 2 - 30;
   const levels = 5;
-
   const angleStep = (2 * Math.PI) / axes.length;
 
   const getPoint = (index, value) => {
@@ -104,7 +216,7 @@ function RadarChart({ properties, criteria }) {
 
   return (
     <View style={styles.chartCard}>
-      <Text style={styles.chartTitle}>🎯 종합 비교</Text>
+      <Text style={styles.chartTitle}>종합 비교</Text>
       <Svg width={size} height={size + 20}>
         {/* 배경 격자 */}
         {Array.from({ length: levels }, (_, i) => {
@@ -182,13 +294,6 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
   // 실거래 데이터가 있는 매물
   const propsWithTx = sorted.filter(p => p.recentPrice);
 
-  // 막대 차트 데이터
-  const barData = propsWithTx.length >= 2 ? propsWithTx.slice(0, 4).flatMap((p, i) => [
-    { value: (p.recentPrice || 0) / 10000, label: i === 0 ? (p.name || "").slice(0, 3) : "", frontColor: CHART_COLORS[i], spacing: 2 },
-    { value: (p.highestPrice || 0) / 10000, frontColor: CHART_COLORS[i] + "88", spacing: 2 },
-    { value: (p.regionAvg || 0) / 10000, frontColor: "#ffffff33", spacing: i < propsWithTx.length - 1 ? 20 : 0 },
-  ]) : [];
-
   // 꺾은선 차트 데이터
   const hasLineData = propsWithTx.some(p => p.transactionHistory && p.transactionHistory.length > 1);
   let lineDataSets = [];
@@ -208,7 +313,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
 
   return (
     <ScrollView style={styles.container}>
-      <Text style={styles.sectionTitle}>📈 점수 높은 순으로 정렬</Text>
+      <Text style={styles.sectionTitle}>점수 높은 순으로 정렬</Text>
 
       {sorted.map((p, i) => (
         <PropertyCard
@@ -218,85 +323,20 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
       ))}
 
       {/* 가격 비교 막대 차트 */}
-      {barData.length > 0 && loadCharts() && (
-        <View style={styles.chartCard}>
-          <Text style={styles.chartTitle}>📊 가격 비교 (억원)</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <BarChart
-              data={barData}
-              barWidth={18}
-              noOfSections={5}
-              barBorderRadius={4}
-              yAxisTextStyle={{ color: COLORS.textFaint, fontSize: 10 }}
-              xAxisLabelTextStyle={{ color: COLORS.textMuted, fontSize: 10 }}
-              xAxisColor="rgba(255,255,255,0.08)"
-              yAxisColor="rgba(255,255,255,0.08)"
-              backgroundColor="transparent"
-              hideRules
-              width={Math.max(SCREEN_WIDTH - 100, propsWithTx.length * 100)}
-              height={180}
-            />
-          </ScrollView>
-          <View style={styles.legendRow}>
-            {propsWithTx.slice(0, 4).map((p, i) => (
-              <View key={i} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[i] }]} />
-                <Text style={styles.legendText}>{(p.name || "").slice(0, 6)}</Text>
-              </View>
-            ))}
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: "#ffffff33" }]} />
-              <Text style={styles.legendText}>구 평균</Text>
-            </View>
-          </View>
-          <Text style={styles.chartSubtext}>진한색: 최근 거래 / 연한색: 최고가 / 회색: 구 평균</Text>
-        </View>
+      {propsWithTx.length >= 2 && (
+        <SimpleBarChart properties={propsWithTx} />
       )}
 
       {/* 시세 추이 꺾은선 차트 */}
-      {lineDataSets.length > 0 && loadCharts() && (
-        <View style={styles.chartCard}>
-          <Text style={styles.chartTitle}>📈 시세 추이 (억원)</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <LineChart
-              data={lineDataSets[0]?.data || []}
-              data2={lineDataSets[1]?.data}
-              data3={lineDataSets[2]?.data}
-              color1={lineDataSets[0] ? CHART_COLORS[0] : "transparent"}
-              color2={lineDataSets[1] ? CHART_COLORS[1] : "transparent"}
-              color3={lineDataSets[2] ? CHART_COLORS[2] : "transparent"}
-              dataPointsColor1={CHART_COLORS[0]}
-              dataPointsColor2={CHART_COLORS[1]}
-              dataPointsColor3={CHART_COLORS[2]}
-              curved
-              thickness={2}
-              noOfSections={5}
-              yAxisTextStyle={{ color: COLORS.textFaint, fontSize: 10 }}
-              xAxisLabelTextStyle={{ color: COLORS.textFaint, fontSize: 9 }}
-              xAxisColor="rgba(255,255,255,0.08)"
-              yAxisColor="rgba(255,255,255,0.08)"
-              backgroundColor="transparent"
-              hideRules
-              width={Math.max(SCREEN_WIDTH - 100, 250)}
-              height={180}
-            />
-          </ScrollView>
-          <View style={styles.legendRow}>
-            {lineDataSets.map((ds, i) => (
-              <View key={i} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: CHART_COLORS[i] }]} />
-                <Text style={styles.legendText}>{(ds.name || "").slice(0, 6)}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
+      {lineDataSets.length > 0 && (
+        <SimpleLineChart dataSets={lineDataSets} />
       )}
 
       {/* 레이더 차트 */}
       <RadarChart properties={sorted} criteria={criteria} />
 
       {/* Detail comparison table */}
-      <Text style={[styles.sectionTitle, { marginTop: 24 }]}>📋 항목별 상세 비교</Text>
+      <Text style={[styles.sectionTitle, { marginTop: 24 }]}>항목별 상세 비교</Text>
       <View style={styles.table}>
         <View style={{ flexDirection: "row" }}>
           {/* Fixed left label column */}
@@ -335,7 +375,7 @@ export default function CompareTab({ criteria, properties, onGoToScore }) {
                         <View key={i} style={[styles.tableCell, styles.tableScoreCell]}>
                           {s > 0
                             ? <Text style={{ fontSize: 15, fontWeight: "800", color: isTop ? getScoreColor(s) : "#64748b" }}>
-                                {s}{isTop ? "★" : ""}
+                                {s}{isTop ? "\u2605" : ""}
                               </Text>
                             : <Text style={{ color: "#374151", fontSize: 12 }}>-</Text>
                           }
