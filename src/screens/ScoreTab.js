@@ -234,7 +234,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         try {
           const priceForAnalysis = data.dongSummary[0].recentPrice;
           const areaForAnalysis = area === "전체" ? data.dongSummary[0].area : area;
-          const analysis = await getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis);
+          const guNmForAnalysis = selectedProp.guNm || "";
+          const analysis = await getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis, guNmForAnalysis);
           updateProp(selectedProp.id, "regionAvg", analysis.guAvg);
           updateProp(selectedProp.id, "dongAvg", analysis.dongAvg);
           updateProp(selectedProp.id, "pricePercentile", analysis.percentile);
@@ -684,9 +685,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               {/* 인접 구 비교 */}
               {selectedProp.neighborComparison && selectedProp.neighborComparison.length > 1 && (
                 <View style={styles.neighborSection}>
-                  <Text style={styles.neighborTitle}>인접 지역 비교</Text>
+                  <Text style={styles.neighborTitle}>인접 동 비교</Text>
                   {selectedProp.neighborComparison.map((n, i) => {
-                    const isCurrent = n.guNm === (selectedProp.guNm || "");
+                    const isCurrent = n.guNm === (selectedProp.umdNm || "");
                     return (
                       <View key={i} style={[styles.neighborRow, isCurrent && styles.neighborRowCurrent]}>
                         <Text style={[styles.neighborName, isCurrent && { color: COLORS.primary, fontWeight: "800" }]}>

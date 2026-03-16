@@ -29,8 +29,8 @@ export async function getTransactions(aptNm, lawdCd, area = "전체", months = 1
   return res.json();
 }
 
-export async function getRegionalAnalysis(lawdCd, umdNm, area, price) {
-  const res = await fetch(`${SERVER_URL}/api/apartment/regional-analysis?lawdCd=${lawdCd}&umdNm=${encodeURIComponent(umdNm)}&area=${area}&price=${price}`);
+export async function getRegionalAnalysis(lawdCd, umdNm, area, price, guNm = "") {
+  const res = await fetch(`${SERVER_URL}/api/apartment/regional-analysis?lawdCd=${lawdCd}&umdNm=${encodeURIComponent(umdNm)}&area=${area}&price=${price}&guNm=${encodeURIComponent(guNm)}`);
   if (!res.ok) throw new Error("시세 분석 실패");
   return res.json();
 }

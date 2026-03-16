@@ -752,37 +752,75 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
       }
     }
 
-    // 인접 구 비교 (같은 시도)
-    const sidoPrefix = lawdCd.slice(0, 2);
-    const neighborGus = db.prepare(`
-      SELECT lawd_cd, gu_nm FROM region_codes
-      WHERE lawd_cd LIKE ? AND lawd_cd != ?
-    `).all(`${sidoPrefix}%`, lawdCd);
-
+    // 인접 동 비교 (좌표 기반)
+    const JUSO_COORD_KEY = process.env.JUSO_COORD_KEY;
     const neighborComparison = [];
-    // 현재 구 추가
-    const currentGu = db.prepare("SELECT gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
-    if (currentGu && guAvg) {
-      neighborComparison.push({ guNm: currentGu.gu_nm, avg: guAvg });
-    }
 
-    // 인접 구 (최대 5개, 거래 데이터가 있는 것만)
-    for (const ng of neighborGus.slice(0, 10)) {
-      const ngPrices = db.prepare(`
-        SELECT deal_amount FROM transaction_cache
-        WHERE lawd_cd = ? AND exclu_use_ar BETWEEN ? AND ?
-      `).all(ng.lawd_cd, areaNum - 5, areaNum + 5).map(r => r.deal_amount);
+    // 같은 구 내 모든 동별 평균
+    const allDongs = db.prepare(`
+      SELECT umd_nm, AVG(deal_amount) as avg_price, COUNT(*) as cnt
+      FROM transaction_cache
+      WHERE lawd_cd = ? ${areaNum ? "AND exclu_use_ar BETWEEN ? AND ?" : ""}
+      GROUP BY umd_nm
+      HAVING cnt >= 2
+    `).all(...(areaNum ? [lawdCd, areaNum - 5, areaNum + 5] : [lawdCd]));
 
-      if (ngPrices.length > 0) {
-        neighborComparison.push({
-          guNm: ng.gu_nm,
-          avg: Math.round(ngPrices.reduce((s, p) => s + p, 0) / ngPrices.length),
-        });
+    if (JUSO_COORD_KEY && umdNm && allDongs.length > 1) {
+      // 현재 동의 대표 주소로 좌표 조회
+      const getCoord = async (dongName) => {
+        try {
+          const keyword = encodeURIComponent(`${req.query.guNm || ""} ${dongName}`);
+          const addrRes = await fetch(`https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${process.env.JUSO_API_KEY}&keyword=${keyword}&resultType=json&countPerPage=1&currentPage=1`, { timeout: 5000 });
+          const addrData = await addrRes.json();
+          const j = addrData?.results?.juso?.[0];
+          if (!j) return null;
+          const coordRes = await fetch(`https://business.juso.go.kr/addrlink/addrCoordApi.do?confmKey=${JUSO_COORD_KEY}&admCd=${j.admCd}&rnMgtSn=${j.rnMgtSn}&udrtYn=${j.udrtYn}&buldMnnm=${j.buldMnnm}&buldSlno=${j.buldSlno}&resultType=json`, { timeout: 5000 });
+          const coordData = await coordRes.json();
+          const c = coordData?.results?.juso?.[0];
+          if (!c) return null;
+          return { x: parseFloat(c.entX), y: parseFloat(c.entY) };
+        } catch { return null; }
+      };
+
+      // 현재 동 + 모든 동 좌표 조회 (병렬)
+      const dongNames = allDongs.map(d => d.umd_nm);
+      const coordResults = await Promise.all(dongNames.map(d => getCoord(d)));
+
+      // 현재 동 좌표 찾기
+      const currentIdx = dongNames.indexOf(umdNm);
+      const currentCoord = currentIdx >= 0 ? coordResults[currentIdx] : null;
+
+      if (currentCoord) {
+        // 거리 계산 후 가까운 4개 + 현재 동
+        const dongsWithDist = allDongs.map((d, i) => {
+          const coord = coordResults[i];
+          const dist = coord
+            ? Math.sqrt(Math.pow(coord.x - currentCoord.x, 2) + Math.pow(coord.y - currentCoord.y, 2))
+            : Infinity;
+          return { dongNm: d.umd_nm, avg: Math.round(d.avg_price), dist, isCurrent: d.umd_nm === umdNm };
+        }).filter(d => d.dist < Infinity);
+
+        dongsWithDist.sort((a, b) => a.dist - b.dist);
+        const nearest = dongsWithDist.slice(0, 5); // 현재 동 포함 5개
+        nearest.sort((a, b) => b.avg - a.avg);
+        for (const n of nearest) {
+          neighborComparison.push({ guNm: n.dongNm, avg: n.avg });
+        }
       }
-      if (neighborComparison.length >= 6) break;
     }
 
-    neighborComparison.sort((a, b) => b.avg - a.avg);
+    // 좌표 조회 실패 시 fallback: 같은 구 내 동별 평균 상위 5개
+    if (neighborComparison.length === 0) {
+      const sorted = allDongs.sort((a, b) => b.avg_price - a.avg_price);
+      // 현재 동을 포함하여 5개
+      const currentDong = sorted.find(d => d.umd_nm === umdNm);
+      const others = sorted.filter(d => d.umd_nm !== umdNm).slice(0, 4);
+      if (currentDong) neighborComparison.push({ guNm: currentDong.umd_nm, avg: Math.round(currentDong.avg_price) });
+      for (const d of others) {
+        neighborComparison.push({ guNm: d.umd_nm, avg: Math.round(d.avg_price) });
+      }
+      neighborComparison.sort((a, b) => b.avg - a.avg);
+    }
 
     res.json({ guAvg, dongAvg, percentile, dongPercentile, neighborComparison });
   } catch (e) {
