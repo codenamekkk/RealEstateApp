@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -1260,7 +1260,7 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       heatType: housingInfo?.codeHeatNm || null,
       constructor: housingInfo?.kaptBcompany || null,
       developer: housingInfo?.kaptAcompany || null,
-      manageTel: housingInfo?.kaptTel ? housingInfo.kaptTel.replace(/(\d{2,3})(\d{3,4})(\d{4})/, "$1-$2-$3") : null,
+      manageTel: housingInfo?.kaptTel ? housingInfo.kaptTel.replace(/[^0-9]/g, "").replace(/^(02)(\d{3,4})(\d{4})$/, "$1-$2-$3").replace(/^(0\d{2})(\d{3,4})(\d{4})$/, "$1-$2-$3") : null,
       manageType: housingInfo?.codeMgrNm || null,
       hallType: housingInfo?.codeHallNm || null,
       doroJuso: housingInfo?.doroJuso || null,
