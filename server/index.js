@@ -77,6 +77,48 @@ db.exec(`
   )
 `);
 
+// ── 전월세 캐시 테이블 ──────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rent_cache (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    lawd_cd       TEXT NOT NULL,
+    deal_ymd      TEXT NOT NULL,
+    apt_nm        TEXT NOT NULL,
+    exclu_use_ar  REAL NOT NULL,
+    deposit       INTEGER NOT NULL,
+    monthly_rent  INTEGER NOT NULL DEFAULT 0,
+    floor         INTEGER,
+    build_year    INTEGER,
+    umd_nm        TEXT,
+    deal_year     INTEGER,
+    deal_month    INTEGER,
+    deal_day      INTEGER,
+    fetched_at    INTEGER DEFAULT (unixepoch()),
+    UNIQUE(lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, deal_day)
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_apt ON rent_cache(lawd_cd, apt_nm)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_ymd ON rent_cache(lawd_cd, deal_ymd)`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rent_fetch_log (
+    lawd_cd    TEXT NOT NULL,
+    deal_ymd   TEXT NOT NULL,
+    fetched_at INTEGER DEFAULT (unixepoch()),
+    PRIMARY KEY(lawd_cd, deal_ymd)
+  )
+`);
+
+// ── 좌표 캐시 테이블 ──────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS coord_cache (
+    gu_dong_key TEXT PRIMARY KEY,
+    x           REAL,
+    y           REAL,
+    fetched_at  INTEGER DEFAULT (unixepoch())
+  )
+`);
+
 // ── 법정동코드 시딩 ──────────────────────────────────────────────
 const regionCount = db.prepare("SELECT COUNT(*) as cnt FROM region_codes").get();
 if (regionCount.cnt === 0) {
@@ -328,6 +370,9 @@ async function fetchMolitData(lawdCd, dealYmd) {
   return Array.isArray(items) ? items : [items];
 }
 
+// 동시성 제어: 동일 키에 대한 중복 MOLIT 호출 방지
+const _cacheInflight = new Map();
+
 async function ensureCached(lawdCd, dealYmd) {
   const log = db.prepare("SELECT fetched_at FROM api_fetch_log WHERE lawd_cd = ? AND deal_ymd = ?").get(lawdCd, dealYmd);
   const now = Math.floor(Date.now() / 1000);
@@ -338,34 +383,112 @@ async function ensureCached(lawdCd, dealYmd) {
     return; // 캐시 유효
   }
 
-  const items = await fetchMolitData(lawdCd, dealYmd);
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO transaction_cache
-    (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  // 이미 진행 중인 동일 요청이 있으면 그 결과를 기다림
+  const key = `${lawdCd}_${dealYmd}`;
+  if (_cacheInflight.has(key)) {
+    return _cacheInflight.get(key);
+  }
 
-  const tx = db.transaction(() => {
-    for (const item of items) {
-      const amount = parseInt(String(item.dealAmount || "0").replace(/,/g, "").trim());
-      const area = parseFloat(item.excluUseAr || 0);
-      if (!item.aptNm || !amount || !area) continue;
-      insert.run(
-        lawdCd, dealYmd,
-        String(item.aptNm).trim(),
-        String(item.aptDong || "").trim(),
-        area, amount,
-        parseInt(item.floor) || null,
-        parseInt(item.buildYear) || null,
-        String(item.umdNm || "").trim(),
-        parseInt(item.dealYear) || null,
-        parseInt(item.dealMonth) || null,
-        parseInt(item.dealDay) || null
-      );
-    }
-    db.prepare("INSERT OR REPLACE INTO api_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
-  });
-  tx();
+  const promise = (async () => {
+    const items = await fetchMolitData(lawdCd, dealYmd);
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO transaction_cache
+      (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = db.transaction(() => {
+      for (const item of items) {
+        const amount = parseInt(String(item.dealAmount || "0").replace(/,/g, "").trim());
+        const area = parseFloat(item.excluUseAr || 0);
+        if (!item.aptNm || !amount || !area) continue;
+        insert.run(
+          lawdCd, dealYmd,
+          String(item.aptNm).trim(),
+          String(item.aptDong || "").trim(),
+          area, amount,
+          parseInt(item.floor) || null,
+          parseInt(item.buildYear) || null,
+          String(item.umdNm || "").trim(),
+          parseInt(item.dealYear) || null,
+          parseInt(item.dealMonth) || null,
+          parseInt(item.dealDay) || null
+        );
+      }
+      db.prepare("INSERT OR REPLACE INTO api_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+    });
+    tx();
+  })();
+
+  _cacheInflight.set(key, promise);
+  try {
+    await promise;
+  } finally {
+    _cacheInflight.delete(key);
+  }
+}
+
+// 전월세 캐싱 (매매 캐싱과 동일한 패턴)
+const _rentInflight = new Map();
+
+async function ensureRentCached(lawdCd, dealYmd) {
+  const log = db.prepare("SELECT fetched_at FROM rent_fetch_log WHERE lawd_cd = ? AND deal_ymd = ?").get(lawdCd, dealYmd);
+  const now = Math.floor(Date.now() / 1000);
+  const currentYm = new Date().toISOString().slice(0, 7).replace("-", "");
+  const isCurrentMonth = dealYmd === currentYm;
+
+  if (log && (!isCurrentMonth || (now - log.fetched_at) < 86400)) {
+    return;
+  }
+
+  const key = `rent_${lawdCd}_${dealYmd}`;
+  if (_rentInflight.has(key)) {
+    return _rentInflight.get(key);
+  }
+
+  const promise = (async () => {
+    const url = `https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999`;
+    const r = await fetch(url, { timeout: 15000 });
+    const text = await r.text();
+    const parsed = xmlParser.parse(text);
+    const items = parsed?.response?.body?.items?.item;
+    const list = !items ? [] : Array.isArray(items) ? items : [items];
+
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO rent_cache
+      (lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = db.transaction(() => {
+      for (const item of list) {
+        const deposit = parseInt(String(item.deposit || "0").replace(/,/g, ""));
+        const monthly = parseInt(String(item.monthlyRent || "0").replace(/,/g, ""));
+        const area = parseFloat(item.excluUseAr || 0);
+        if (!item.aptNm || !area) continue;
+        insert.run(
+          lawdCd, dealYmd,
+          String(item.aptNm).trim(),
+          area, deposit, monthly,
+          parseInt(item.floor) || null,
+          parseInt(item.buildYear) || null,
+          String(item.umdNm || "").trim(),
+          parseInt(item.dealYear) || null,
+          parseInt(item.dealMonth) || null,
+          parseInt(item.dealDay) || null
+        );
+      }
+      db.prepare("INSERT OR REPLACE INTO rent_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+    });
+    tx();
+  })();
+
+  _rentInflight.set(key, promise);
+  try {
+    await promise;
+  } finally {
+    _rentInflight.delete(key);
+  }
 }
 
 function getMonthRange(months) {
@@ -397,16 +520,18 @@ app.get("/api/search/apartment", async (req, res) => {
         const jusoRes = await fetch(jusoUrl, { timeout: 10000 });
         const jusoData = await jusoRes.json();
         const jusos = jusoData?.results?.juso || [];
-        // 아파트만 필터 (bdNm에 값이 있는 항목)
-        for (const j of jusos) {
-          if (!j.bdNm) continue;
-          // 지번주소로 KREB 검색
+        // 아파트만 필터 (bdNm에 값이 있는 항목) → 병렬 KREB 조회
+        const aptJusos = jusos.filter(j => j.bdNm);
+        const krebPromises = aptJusos.map(j => {
           const jibunDong = j.emdNm || "";
           const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
           const condAddr = encodeURIComponent("cond[주소::LIKE]") + "=" + encodeURIComponent(jibunDong);
           const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(j.bdNm.replace(/아파트|단지/g, "").trim());
           const krebUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=5&${condType}&${condAddr}&${condName}`;
-          const krebRes = await fetch(krebUrl, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] }));
+          return fetch(krebUrl, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] }));
+        });
+        const krebResults = await Promise.all(krebPromises);
+        for (const krebRes of krebResults) {
           for (const item of (krebRes.data || [])) {
             const pnu = String(item["필지고유번호"] || "");
             jusoResults.push({
@@ -614,7 +739,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
   }
 });
 
-// ── 전월세 실거래 조회 ──────────────────────────────────────────────────
+// ── 전월세 실거래 조회 (캐시 기반) ──────────────────────────────────────
 app.get("/api/apartment/rent", async (req, res) => {
   const { aptNm, lawdCd, area, months = 12, buildYear } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
@@ -623,74 +748,49 @@ app.get("/api/apartment/rent", async (req, res) => {
   try {
     const monthList = getMonthRange(parseInt(months));
 
-    // 전월세 데이터 수집 (병렬)
-    const { XMLParser } = require("fast-xml-parser");
-    const parser = new XMLParser();
+    // 캐시 확보 (동시성 제어 포함)
+    await Promise.all(monthList.map(ym => ensureRentCached(lawdCd, ym)));
 
-    const fetchRentData = async (ym) => {
-      const url = `https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${ym}&numOfRows=9999`;
-      const r = await fetch(url, { timeout: 15000 });
-      const text = await r.text();
-      const parsed = parser.parse(text);
-      const items = parsed?.response?.body?.items?.item;
-      if (!items) return [];
-      return Array.isArray(items) ? items : [items];
-    };
-
-    const allData = await Promise.all(monthList.map(ym => fetchRentData(ym).catch(() => [])));
-    const flatData = allData.flat();
-
-    // 아파트 이름 필터
+    // DB에서 조회
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    let filtered = flatData.filter(item => {
-      const name = String(item.aptNm || "").trim();
-      return name === cleanName || name.startsWith(cleanName) || cleanName.includes(name);
-    });
+    let query = `SELECT * FROM rent_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
+    const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
 
-    // buildYear 필터
     if (buildYear) {
-      filtered = filtered.filter(item => parseInt(item.buildYear) === parseInt(buildYear));
+      query += ` AND build_year = ?`;
+      params.push(parseInt(buildYear));
     }
-
-    // area 필터
     if (area && area !== "전체") {
       const areaNum = parseFloat(area);
-      filtered = filtered.filter(item => {
-        const ar = parseFloat(item.excluUseAr);
-        return Math.abs(ar - areaNum) < 2;
-      });
+      query += ` AND exclu_use_ar BETWEEN ? AND ?`;
+      params.push(areaNum - 2, areaNum + 2);
     }
+    query += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
+
+    const rows = db.prepare(query).all(...params);
 
     // 전세/월세 분리
     const jeonse = [];
     const wolse = [];
 
-    for (const item of filtered) {
-      const deposit = parseInt(String(item.deposit || "0").replace(/,/g, ""));
-      const monthly = parseInt(String(item.monthlyRent || "0").replace(/,/g, ""));
-      const excluUseAr = parseFloat(item.excluUseAr) || 0;
+    for (const r of rows) {
       const entry = {
-        dealDate: `${item.dealYear}.${String(item.dealMonth).padStart(2, "0")}.${String(item.dealDay).padStart(2, "0")}`,
-        deposit,
-        monthlyRent: monthly,
-        floor: parseInt(item.floor) || 0,
-        excluUseAr,
-        areaPyeong: Math.round(excluUseAr / 3.3058),
-        umdNm: item.umdNm || "",
-        buildYear: parseInt(item.buildYear) || 0,
+        dealDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+        deposit: r.deposit,
+        monthlyRent: r.monthly_rent,
+        floor: r.floor || 0,
+        excluUseAr: r.exclu_use_ar,
+        areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
+        umdNm: r.umd_nm || "",
+        buildYear: r.build_year || 0,
       };
 
-      if (monthly > 0) {
+      if (r.monthly_rent > 0) {
         wolse.push(entry);
       } else {
         jeonse.push(entry);
       }
     }
-
-    // 날짜순 정렬
-    const sortByDate = (a, b) => b.dealDate.localeCompare(a.dealDate);
-    jeonse.sort(sortByDate);
-    wolse.sort(sortByDate);
 
     // 동별 요약 생성
     const makeSummary = (data, type) => {
@@ -765,10 +865,16 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     `).all(...(areaNum ? [lawdCd, areaNum - 5, areaNum + 5] : [lawdCd]));
 
     if (JUSO_COORD_KEY && umdNm && allDongs.length > 1) {
-      // 현재 동의 대표 주소로 좌표 조회
-      const getCoord = async (dongName) => {
+      const guNmForCoord = req.query.guNm || "";
+
+      // 캐시 우선 좌표 조회: DB에 있으면 바로 사용, 없으면 API 호출 후 캐시
+      const getCoordCached = async (dongName) => {
+        const cacheKey = `${guNmForCoord}_${dongName}`;
+        const cached = db.prepare("SELECT x, y FROM coord_cache WHERE gu_dong_key = ?").get(cacheKey);
+        if (cached) return { x: cached.x, y: cached.y };
+
         try {
-          const keyword = encodeURIComponent(`${req.query.guNm || ""} ${dongName}`);
+          const keyword = encodeURIComponent(`${guNmForCoord} ${dongName}`);
           const addrRes = await fetch(`https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${process.env.JUSO_API_KEY}&keyword=${keyword}&resultType=json&countPerPage=1&currentPage=1`, { timeout: 5000 });
           const addrData = await addrRes.json();
           const j = addrData?.results?.juso?.[0];
@@ -777,13 +883,15 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
           const coordData = await coordRes.json();
           const c = coordData?.results?.juso?.[0];
           if (!c) return null;
-          return { x: parseFloat(c.entX), y: parseFloat(c.entY) };
+          const coord = { x: parseFloat(c.entX), y: parseFloat(c.entY) };
+          db.prepare("INSERT OR REPLACE INTO coord_cache (gu_dong_key, x, y, fetched_at) VALUES (?, ?, ?, unixepoch())").run(cacheKey, coord.x, coord.y);
+          return coord;
         } catch { return null; }
       };
 
-      // 현재 동 + 모든 동 좌표 조회 (병렬)
+      // 현재 동 + 모든 동 좌표 조회 (병렬, 캐시 활용)
       const dongNames = allDongs.map(d => d.umd_nm);
-      const coordResults = await Promise.all(dongNames.map(d => getCoord(d)));
+      const coordResults = await Promise.all(dongNames.map(d => getCoordCached(d)));
 
       // 현재 동 좌표 찾기
       const currentIdx = dongNames.indexOf(umdNm);

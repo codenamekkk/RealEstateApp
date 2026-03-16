@@ -49,6 +49,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [txTab, setTxTab] = useState("매매"); // 매매/전세/월세
   const [areaLoading, setAreaLoading] = useState(false);
 
+  // 전체 데이터 캐시 (평수 변경 시 클라이언트 필터링용)
+  const allDataCache = useRef({ transactions: null, rent: null });
+
   // 매물 변경 시 상태 리셋
   useEffect(() => {
     setShowDropdown(false);
@@ -86,6 +89,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   async function loadRentData(aptNm, lawdCd, area, buildYear) {
     try {
       const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear);
+      // area가 "전체"일 때 캐시 저장
+      if (area === "전체") {
+        allDataCache.current.rent = data;
+      }
       updateProp(selectedProp.id, "jeonseData", data.jeonse || { transactions: [], dongSummary: [] });
       updateProp(selectedProp.id, "wolseData", data.wolse || { transactions: [], dongSummary: [] });
     } catch (e) {
@@ -175,17 +182,20 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "umdNm", regionData.umdNm);
       updateProp(selectedProp.id, "guNm", regionData.guNm);
 
-      const areasData = await getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear);
-      setAreas(areasData);
-      setSelectedArea("전체");
-      updateProp(selectedProp.id, "selectedArea", "전체");
-
-      // 매매 + 전월세 + 단지정보 병렬 조회 (하나 실패해도 나머지 진행)
-      await Promise.allSettled([
+      // 평수 목록 + 매매 + 전월세 + 단지정보 모두 병렬 조회
+      const [areasResult] = await Promise.allSettled([
+        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear),
         loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear),
         loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear),
         loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd),
       ]);
+
+      // 평수 목록 반영
+      if (areasResult.status === "fulfilled") {
+        setAreas(areasResult.value);
+      }
+      setSelectedArea("전체");
+      updateProp(selectedProp.id, "selectedArea", "전체");
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
     } finally {
@@ -201,28 +211,52 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     return ci?.supplyPyeong || Math.round(exclusiveArea / 3.3058);
   }
 
-  // 평수 선택
+  // 평수 선택 (캐시된 전체 데이터에서 클라이언트 필터링, 없으면 서버 호출)
   async function handleAreaSelect(area) {
     setSelectedArea(area);
     updateProp(selectedProp.id, "selectedArea", area);
-    if (selectedProp.lawdCd) {
-      setAreaLoading(true);
-      try {
+    if (!selectedProp.lawdCd) return;
+
+    setAreaLoading(true);
+    try {
+      if (area === "전체") {
+        // "전체"는 캐시에서 바로 복원
+        const cachedTx = allDataCache.current.transactions;
+        const cachedRent = allDataCache.current.rent;
+        if (cachedTx) {
+          updateProp(selectedProp.id, "dongSummary", cachedTx.dongSummary || []);
+          updateProp(selectedProp.id, "transactionHistory", cachedTx.transactions || []);
+          if (cachedTx.dongSummary?.length > 0) {
+            updateProp(selectedProp.id, "recentPrice", Math.max(...cachedTx.dongSummary.map(d => d.recentPrice)));
+            updateProp(selectedProp.id, "highestPrice", Math.max(...cachedTx.dongSummary.map(d => d.highestPrice)));
+          }
+        }
+        if (cachedRent) {
+          updateProp(selectedProp.id, "jeonseData", cachedRent.jeonse || { transactions: [], dongSummary: [] });
+          updateProp(selectedProp.id, "wolseData", cachedRent.wolse || { transactions: [], dongSummary: [] });
+        }
+      } else {
+        // 특정 평수: 서버에서 필터링된 데이터 조회 (캐시 덕분에 DB 쿼리만 수행, 외부 API 호출 없음)
         await Promise.allSettled([
           loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear),
           loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear),
         ]);
-      } finally {
-        setAreaLoading(false);
       }
+    } finally {
+      setAreaLoading(false);
     }
   }
 
-  // 실거래 + 지역 분석 데이터 로드
+  // 실거래 데이터 로드 (지역 분석은 별도 비동기)
   async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear) {
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
       const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear);
+
+      // area가 "전체"일 때 캐시 저장
+      if (area === "전체") {
+        allDataCache.current.transactions = data;
+      }
 
       updateProp(selectedProp.id, "dongSummary", data.dongSummary || []);
       updateProp(selectedProp.id, "transactionHistory", data.transactions || []);
@@ -237,20 +271,22 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         updateProp(selectedProp.id, "highestPrice", highestPrice);
       }
 
-      // 지역 시세 분석
+      // 지역 시세 분석 (fire-and-forget: 매매 데이터 먼저 표시, 분석은 백그라운드)
       if (data.dongSummary && data.dongSummary.length > 0) {
         setAnalysisLoading(true);
-        try {
-          const priceForAnalysis = data.dongSummary[0].recentPrice;
-          const areaForAnalysis = area === "전체" ? data.dongSummary[0].area : area;
-          const guNmForAnalysis = selectedProp.guNm || "";
-          const analysis = await getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis, guNmForAnalysis);
-          updateProp(selectedProp.id, "regionAvg", analysis.guAvg);
-          updateProp(selectedProp.id, "dongAvg", analysis.dongAvg);
-          updateProp(selectedProp.id, "pricePercentile", analysis.percentile);
-          updateProp(selectedProp.id, "dongPercentile", analysis.dongPercentile);
-          updateProp(selectedProp.id, "neighborComparison", analysis.neighborComparison || []);
-        } catch {} finally { setAnalysisLoading(false); }
+        const priceForAnalysis = data.dongSummary[0].recentPrice;
+        const areaForAnalysis = area === "전체" ? data.dongSummary[0].area : area;
+        const guNmForAnalysis = selectedProp.guNm || "";
+        getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis, guNmForAnalysis)
+          .then(analysis => {
+            updateProp(selectedProp.id, "regionAvg", analysis.guAvg);
+            updateProp(selectedProp.id, "dongAvg", analysis.dongAvg);
+            updateProp(selectedProp.id, "pricePercentile", analysis.percentile);
+            updateProp(selectedProp.id, "dongPercentile", analysis.dongPercentile);
+            updateProp(selectedProp.id, "neighborComparison", analysis.neighborComparison || []);
+          })
+          .catch(() => {})
+          .finally(() => setAnalysisLoading(false));
       }
     } catch (e) {
       console.warn("실거래 데이터 로드 실패:", e.message);
