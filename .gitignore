@@ -11,3 +11,5 @@ web-build/
 google-service-account.json
 server/.env
 server/rooms.db
+*.db-shm
+*.db-wal
