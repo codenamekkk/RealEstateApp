@@ -197,6 +197,14 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }
 
+  // 전용면적 → 공급면적 기준 평수 변환
+  function getSupplyPyeong(exclusiveArea) {
+    const ci = selectedProp.complexInfo?.exclusiveAreas?.find(
+      e => Math.abs(e.area - exclusiveArea) < 2
+    );
+    return ci?.supplyPyeong || Math.round(exclusiveArea / 3.3058);
+  }
+
   // 평수 선택
   async function handleAreaSelect(area) {
     setSelectedArea(area);
@@ -357,9 +365,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <Text style={styles.priceUnit}>원</Text>
               ) : null}
             </View>
-            {selectedProp.buildYear && (
-              <Text style={styles.buildYearText}>건축년도: {selectedProp.buildYear}년</Text>
-            )}
           </View>
 
           {/* 건축물대장 단지 정보 */}
@@ -468,7 +473,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     {selectedProp.complexInfo.exclusiveAreas.map((a, i) => (
                       <View key={i} style={styles.complexAreaPill}>
                         <Text style={styles.complexAreaText}>
-                          {a.supplyArea ? `${a.supplyArea}/${a.area}㎡(${a.areaPyeong}평)` : `${a.area}㎡(${a.areaPyeong}평)`}
+                          {a.supplyArea ? `${a.supplyArea}/${a.area}㎡(${a.supplyPyeong}평)` : `${a.area}㎡(${a.areaPyeong}평)`}
                         </Text>
                       </View>
                     ))}
@@ -494,7 +499,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     e => Math.abs(e.area - a.area) < 1
                   );
                   const label = ci?.supplyArea
-                    ? `${ci.supplyArea}/${a.area}㎡(${a.areaPyeong}평)`
+                    ? `${ci.supplyArea}/${a.area}㎡(${ci.supplyPyeong}평)`
                     : `${a.area}㎡(${a.areaPyeong}평)`;
                   return (
                     <TouchableOpacity
@@ -547,7 +552,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
                       <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
                       {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.areaPyeong}평</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{getSupplyPyeong(d.area)}평</Text>
                       )}
                       <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
                         {formatPrice(d.recentPrice)}
@@ -574,7 +579,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
                       <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
                       {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.areaPyeong}평</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{getSupplyPyeong(d.area)}평</Text>
                       )}
                       <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
                         {formatPrice(d.recentDeposit)}
@@ -601,7 +606,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
                       <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
                       {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1 }]}>{d.areaPyeong}평</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1 }]}>{getSupplyPyeong(d.area)}평</Text>
                       )}
                       <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]} numberOfLines={1}>
                         {formatPrice(d.recentDeposit)}/{d.recentMonthly}만

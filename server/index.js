@@ -991,6 +991,20 @@ async function fetchBuildingTitle(sigunguCd, bjdongCd, bun, ji) {
 }
 
 /**
+ * 건축물대장 총괄표제부 조회 (용적률, 건폐율, 주차대수 등 단지 전체 정보)
+ */
+async function fetchBuildingRecapTitle(sigunguCd, bjdongCd, bun, ji) {
+  const url = `${BUILDING_API_BASE}/getBrRecapTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=10&pageNo=1&_type=json`;
+  console.log("[BUILDING] 총괄표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
+  const res = await fetch(url, { timeout: 15000 });
+  const data = await res.json();
+  const items = data?.response?.body?.items?.item;
+  if (!items) return null;
+  const arr = Array.isArray(items) ? items : [items];
+  return arr[0] || null;
+}
+
+/**
  * 건축물대장 전유공용면적 조회
  */
 async function fetchBuildingArea(sigunguCd, bjdongCd, bun, ji) {
@@ -1028,10 +1042,11 @@ app.get("/api/apartment/complex-info", async (req, res) => {
 
     console.log(`[COMPLEX] bjdongCd 확인: ${bjdongCd}`);
 
-    // 표제부 + 전유면적 + 공동주택 기본정보 동시 조회
+    // 표제부 + 총괄표제부 + 전유면적 + 공동주택 기본정보 동시 조회
     const bjdCode10 = lawdCd + bjdongCd;
-    const [titleItems, areaItems, kaptCode] = await Promise.all([
+    const [titleItems, recapTitle, areaItems, kaptCode] = await Promise.all([
       fetchBuildingTitle(lawdCd, bjdongCd, bun, ji),
+      fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji),
       fetchBuildingArea(lawdCd, bjdongCd, bun, ji),
       findKaptCode(bjdCode10, req.query.aptName || ""),
     ]);
@@ -1043,59 +1058,73 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
     }
 
-    // 표제부에서 단지 전체 정보 합산
+    // 총괄표제부에서 단지 전체 정보 (용적률, 건폐율, 주차, 세대수)
+    let totalHhld = parseInt(recapTitle?.hhldCnt) || 0;
+    let totalPkng = parseInt(recapTitle?.totPkngCnt) || 0;
+    let bcRat = parseFloat(recapTitle?.bcRat) || 0;
+    let vlRat = parseFloat(recapTitle?.vlRat) || 0;
+    let totArea = parseFloat(recapTitle?.totArea) || 0;
+
+    // 표제부에서 동별 정보 (최고층, 지하층, 사용승인일)
     let maxFloor = 0;
     let maxUgrndFloor = 0;
-    let totalHhld = 0;
-    let totalPkng = 0;
-    let bcRat = 0;
-    let vlRat = 0;
     let useAprDay = "";
-    let totArea = 0;
     const buildingNames = [];
 
     for (const item of titleItems) {
       const grndFlr = parseInt(item.grndFlrCnt) || 0;
       const ugrndFlr = parseInt(item.ugrndFlrCnt) || 0;
-      const hhld = parseInt(item.hhldCnt) || 0;
-      const pkng = parseInt(item.totPkngCnt) || 0;
 
       if (grndFlr > maxFloor) maxFloor = grndFlr;
       if (ugrndFlr > maxUgrndFloor) maxUgrndFloor = ugrndFlr;
-      totalHhld += hhld;
-      totalPkng += pkng;
-
-      // 용적률/건폐율은 보통 단지 전체에서 동일하므로 최초값 사용
-      if (!bcRat && item.bcRat) bcRat = parseFloat(item.bcRat) || 0;
-      if (!vlRat && item.vlRat) vlRat = parseFloat(item.vlRat) || 0;
       if (!useAprDay && item.useAprDay) useAprDay = String(item.useAprDay);
-      if (item.totArea) totArea += parseFloat(item.totArea) || 0;
 
       if (item.bldNm) buildingNames.push(item.bldNm);
     }
 
-    // 전유면적에서 고유 면적 목록 추출 (전유 타입만)
-    const exclusiveAreas = new Set();
+    // 호별 그룹핑으로 전용면적 + 주거공용면적 → 공급면적 계산
+    const unitMap = {};
     for (const item of areaItems) {
+      const key = (item.dongNm || "") + "-" + (item.hoNm || "");
+      if (!unitMap[key]) unitMap[key] = { exclusive: 0, mainPurps: "", pubItems: [] };
       const gbNm = String(item.exposPubuseGbCdNm || "").trim();
       if (gbNm === "전유") {
-        const area = parseFloat(item.area);
-        if (area && area > 10) { // 10㎡ 이하 무시 (창고 등)
-          exclusiveAreas.add(Math.round(area * 100) / 100);
-        }
+        unitMap[key].exclusive = parseFloat(item.area) || 0;
+        unitMap[key].mainPurps = item.mainPurpsCdNm || "";
+      } else if (gbNm === "공용") {
+        unitMap[key].pubItems.push({
+          area: parseFloat(item.area) || 0,
+          etcPurps: item.etcPurps || "",
+          mainAtch: item.mainAtchGbCdNm || "",
+        });
       }
     }
 
-    // 면적 정렬 및 평수 변환 + 공급면적 계산
-    const sortedAreas = [...exclusiveAreas].sort((a, b) => a - b);
-    const totalExclusive = sortedAreas.reduce((sum, a) => sum + a, 0);
-    const supplyRatio = totalExclusive > 0 ? totArea / (totalHhld * (totalExclusive / sortedAreas.length)) : 1.33;
-    const areaList = sortedAreas.map(a => ({
-      area: a,
-      areaPyeong: Math.round(a / 3.3058),
-      supplyArea: Math.round(a * supplyRatio),
-      supplyPyeong: Math.round((a * supplyRatio) / 3.3058),
-    }));
+    // 전용면적 타입별 공급면적 산출 (아파트 용도만, 10㎡ 초과)
+    const supplyByExclusive = {};
+    for (const unit of Object.values(unitMap)) {
+      if (!unit.exclusive || unit.exclusive <= 10) continue;
+      if (unit.mainPurps && unit.mainPurps !== "아파트") continue;
+      const areaKey = Math.round(unit.exclusive * 100) / 100;
+      if (supplyByExclusive[areaKey]) continue; // 타입별 1개만 필요
+      // 주거공용 = 주건축물 공용 중 주차장/펌프실/전기실/기계실 제외
+      const residentialCommon = unit.pubItems
+        .filter(p => p.mainAtch === "주건축물" && !/주차|펌프|전기|기계/.test(p.etcPurps))
+        .reduce((sum, p) => sum + p.area, 0);
+      supplyByExclusive[areaKey] = areaKey + residentialCommon;
+    }
+
+    // 면적 정렬 및 평수 변환
+    const sortedAreas = Object.keys(supplyByExclusive).map(Number).sort((a, b) => a - b);
+    const areaList = sortedAreas.map(a => {
+      const supplyArea = Math.round(supplyByExclusive[a]);
+      return {
+        area: a,
+        areaPyeong: Math.round(a / 3.3058),
+        supplyArea,
+        supplyPyeong: Math.round(supplyArea / 3.3058),
+      };
+    });
 
     // 사용승인일 포맷
     let useAprDate = "";
