@@ -614,6 +614,110 @@ app.get("/api/apartment/transactions", async (req, res) => {
   }
 });
 
+// ── 전월세 실거래 조회 ──────────────────────────────────────────────────
+app.get("/api/apartment/rent", async (req, res) => {
+  const { aptNm, lawdCd, area, months = 12, buildYear } = req.query;
+  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
+
+  try {
+    const now = new Date();
+    const monthList = getMonthRange(now, parseInt(months));
+
+    // 전월세 데이터 수집 (병렬)
+    const { XMLParser } = require("fast-xml-parser");
+    const parser = new XMLParser();
+
+    const fetchRentData = async (ym) => {
+      const url = `https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${ym}&numOfRows=9999`;
+      const r = await fetch(url, { timeout: 15000 });
+      const text = await r.text();
+      const parsed = parser.parse(text);
+      const items = parsed?.response?.body?.items?.item;
+      if (!items) return [];
+      return Array.isArray(items) ? items : [items];
+    };
+
+    const allData = await Promise.all(monthList.map(ym => fetchRentData(ym).catch(() => [])));
+    const flatData = allData.flat();
+
+    // 아파트 이름 필터
+    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
+    let filtered = flatData.filter(item => {
+      const name = String(item.aptNm || "").trim();
+      return name === cleanName || name.startsWith(cleanName) || cleanName.includes(name);
+    });
+
+    // buildYear 필터
+    if (buildYear) {
+      filtered = filtered.filter(item => parseInt(item.buildYear) === parseInt(buildYear));
+    }
+
+    // area 필터
+    if (area && area !== "전체") {
+      const areaNum = parseFloat(area);
+      filtered = filtered.filter(item => {
+        const ar = parseFloat(item.excluUseAr);
+        return Math.abs(ar - areaNum) < 2;
+      });
+    }
+
+    // 전세/월세 분리
+    const jeonse = [];
+    const wolse = [];
+
+    for (const item of filtered) {
+      const deposit = parseInt(String(item.deposit || "0").replace(/,/g, ""));
+      const monthly = parseInt(String(item.monthlyRent || "0").replace(/,/g, ""));
+      const excluUseAr = parseFloat(item.excluUseAr) || 0;
+      const entry = {
+        dealDate: `${item.dealYear}.${String(item.dealMonth).padStart(2, "0")}.${String(item.dealDay).padStart(2, "0")}`,
+        deposit,
+        monthlyRent: monthly,
+        floor: parseInt(item.floor) || 0,
+        excluUseAr,
+        areaPyeong: Math.round(excluUseAr / 3.3058),
+        umdNm: item.umdNm || "",
+        buildYear: parseInt(item.buildYear) || 0,
+      };
+
+      if (monthly > 0) {
+        wolse.push(entry);
+      } else {
+        jeonse.push(entry);
+      }
+    }
+
+    // 날짜순 정렬
+    const sortByDate = (a, b) => b.dealDate.localeCompare(a.dealDate);
+    jeonse.sort(sortByDate);
+    wolse.sort(sortByDate);
+
+    // 동별 요약 생성
+    const makeSummary = (data, type) => {
+      const map = {};
+      for (const d of data) {
+        const dong = d.umdNm || "미확인";
+        const areaKey = area && area !== "전체" ? area : String(d.excluUseAr);
+        const key = `${dong}_${areaKey}`;
+        if (!map[key]) {
+          map[key] = { dong, area: d.excluUseAr, areaPyeong: d.areaPyeong, recentDeposit: d.deposit, recentMonthly: d.monthlyRent, recentDate: d.dealDate, recentFloor: d.floor, count: 0 };
+        }
+        map[key].count++;
+      }
+      return Object.values(map);
+    };
+
+    res.json({
+      jeonse: { transactions: jeonse, dongSummary: makeSummary(jeonse, "jeonse") },
+      wolse: { transactions: wolse, dongSummary: makeSummary(wolse, "wolse") },
+    });
+  } catch (e) {
+    console.error("전월세 조회 실패:", e.message);
+    res.status(500).json({ error: "전월세 조회 실패" });
+  }
+});
+
 // ── 지역 시세 분석 ──────────────────────────────────────────────────
 app.get("/api/apartment/regional-analysis", async (req, res) => {
   const { lawdCd, umdNm, area, price } = req.query;
@@ -945,10 +1049,15 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       }
     }
 
-    // 면적 정렬 및 평수 변환
-    const areaList = [...exclusiveAreas].sort((a, b) => a - b).map(a => ({
+    // 면적 정렬 및 평수 변환 + 공급면적 계산
+    const sortedAreas = [...exclusiveAreas].sort((a, b) => a - b);
+    const totalExclusive = sortedAreas.reduce((sum, a) => sum + a, 0);
+    const supplyRatio = totalExclusive > 0 ? totArea / (totalHhld * (totalExclusive / sortedAreas.length)) : 1.33;
+    const areaList = sortedAreas.map(a => ({
       area: a,
       areaPyeong: Math.round(a / 3.3058),
+      supplyArea: Math.round(a * supplyRatio),
+      supplyPyeong: Math.round((a * supplyRatio) / 3.3058),
     }));
 
     // 사용승인일 포맷

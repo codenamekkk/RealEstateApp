@@ -268,14 +268,17 @@ export default function useAppState() {
 
   function addProperty() {
     const id = nextPropId.current++;
-    setLocalProperties(ps => [...ps, {
-      id, name: `매물 ${id}`, address: "", price: "", scores: {}, memo: "",
-      lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
-      recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
-      pricePercentile: null, dongPercentile: null,
-      dongSummary: [], transactionHistory: [], neighborComparison: [],
-      complexInfo: null,
-    }]);
+    setLocalProperties(ps => {
+      const num = ps.length + 1;
+      return [...ps, {
+        id, name: `매물 ${num}`, address: "", price: "", scores: {}, memo: "",
+        lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
+        recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
+        pricePercentile: null, dongPercentile: null,
+        dongSummary: [], transactionHistory: [], neighborComparison: [],
+        complexInfo: null,
+      }];
+    });
     return id;
   }
 

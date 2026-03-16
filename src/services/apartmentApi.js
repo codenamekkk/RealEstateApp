@@ -35,6 +35,14 @@ export async function getRegionalAnalysis(lawdCd, umdNm, area, price) {
   return res.json();
 }
 
+export async function getRentTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear) {
+  let url = `${SERVER_URL}/api/apartment/rent?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+  if (buildYear) url += `&buildYear=${buildYear}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("전월세 조회 실패");
+  return res.json();
+}
+
 export async function getComplexInfo(lawdCd, address, aptName, bjdongCd) {
   let url = `${SERVER_URL}/api/apartment/complex-info?lawdCd=${lawdCd}&address=${encodeURIComponent(address)}&aptName=${encodeURIComponent(aptName || "")}`;
   if (bjdongCd) url += `&bjdongCd=${bjdongCd}`;
