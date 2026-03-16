@@ -167,6 +167,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
   // 검색 결과 선택
   async function handleSelectApartment(item) {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
     setShowDropdown(false);
     setSearchResults([]);
     setDataCollecting(true);
@@ -435,11 +436,11 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <View style={styles.complexRow}>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>용적률</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.vlRat}%</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.vlRat ? `${selectedProp.complexInfo.vlRat}%` : "-"}</Text>
                   </View>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>건폐율</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.bcRat}%</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.bcRat ? `${selectedProp.complexInfo.bcRat}%` : "-"}</Text>
                   </View>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>최고층</Text>
@@ -449,15 +450,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 <View style={styles.complexRow}>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>총세대수</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalHouseholds}세대</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalHouseholds ? `${selectedProp.complexInfo.totalHouseholds}세대` : "-"}</Text>
                   </View>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>총주차</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalParking}대</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.totalParking ? `${selectedProp.complexInfo.totalParking}대` : "-"}</Text>
                   </View>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>세대당 주차</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.parkingPerUnit}대</Text>
+                    <Text style={styles.complexValue}>{selectedProp.complexInfo.parkingPerUnit ? `${selectedProp.complexInfo.parkingPerUnit}대` : "-"}</Text>
                   </View>
                 </View>
                 <View style={styles.complexRow}>

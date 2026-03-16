@@ -674,13 +674,13 @@ app.get("/api/apartment/transactions", async (req, res) => {
     const monthList = getMonthRange(numMonths);
     await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
 
-    // 전체기간 데이터를 위해 추가 캐시 확보 (백그라운드, 응답 차단 안함)
+    // 전체기간 데이터를 위해 추가 캐시 확보 (완료 대기 후 쿼리 실행)
     const allTimeMonthCount = buildYear
       ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, 120)
       : 60;
     const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
     if (allTimeMonths.length > 0) {
-      Promise.allSettled(allTimeMonths.map(ym => ensureCached(lawdCd, ym))).catch(() => {});
+      await Promise.allSettled(allTimeMonths.map(ym => ensureCached(lawdCd, ym)));
     }
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
@@ -1234,9 +1234,12 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     const bjdCode10 = lawdCd + bjdongCd;
     const [buildingResult, kaptCode] = await Promise.all([
       (async () => {
-        const titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji);
-        const recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji);
-        const areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji);
+        let titleItems = [];
+        let recapTitle = null;
+        let areaItems = [];
+        try { titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 표제부 조회 예외:", e.message); }
+        try { recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 총괄표제부 조회 예외:", e.message); }
+        try { areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 전유면적 조회 예외:", e.message); }
         return { titleItems, recapTitle, areaItems };
       })(),
       findKaptCode(bjdCode10, req.query.aptName || ""),
@@ -1246,7 +1249,7 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     // kaptCode로 공동주택 기본정보 조회
     const housingInfo = kaptCode ? await fetchHousingBasicInfo(kaptCode) : null;
 
-    if (titleItems.length === 0) {
+    if (titleItems.length === 0 && !recapTitle && !housingInfo) {
       return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
     }
 
