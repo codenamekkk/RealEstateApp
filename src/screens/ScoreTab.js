@@ -184,11 +184,12 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       setSelectedArea("전체");
       updateProp(selectedProp.id, "selectedArea", "전체");
 
-      // 매매 + 전월세 + 단지정보 병렬 조회
-      const txPromise = loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
-      const rentPromise = loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear);
-      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd);
-      await Promise.all([txPromise, rentPromise, complexPromise]);
+      // 매매 + 전월세 + 단지정보 병렬 조회 (하나 실패해도 나머지 진행)
+      await Promise.allSettled([
+        loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear),
+        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear),
+        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd),
+      ]);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
     } finally {
@@ -201,7 +202,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSelectedArea(area);
     updateProp(selectedProp.id, "selectedArea", area);
     if (selectedProp.lawdCd) {
-      await Promise.all([
+      await Promise.allSettled([
         loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear),
         loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear),
       ]);

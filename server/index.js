@@ -621,8 +621,7 @@ app.get("/api/apartment/rent", async (req, res) => {
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
-    const now = new Date();
-    const monthList = getMonthRange(now, parseInt(months));
+    const monthList = getMonthRange(parseInt(months));
 
     // 전월세 데이터 수집 (병렬)
     const { XMLParser } = require("fast-xml-parser");
