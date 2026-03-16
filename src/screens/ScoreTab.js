@@ -43,12 +43,11 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   // 평수/실거래 관련 state
   const [areas, setAreas] = useState([]);
   const [selectedArea, setSelectedArea] = useState("전체");
-  const [transactionLoading, setTransactionLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [dataCollecting, setDataCollecting] = useState(false);
   const [complexInfoLoading, setComplexInfoLoading] = useState(false);
   const [txTab, setTxTab] = useState("매매"); // 매매/전세/월세
-  const [rentLoading, setRentLoading] = useState(false);
+  const [areaLoading, setAreaLoading] = useState(false);
 
   // 매물 변경 시 상태 리셋
   useEffect(() => {
@@ -85,7 +84,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   }
 
   async function loadRentData(aptNm, lawdCd, area, buildYear) {
-    setRentLoading(true);
     try {
       const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear);
       updateProp(selectedProp.id, "jeonseData", data.jeonse || { transactions: [], dongSummary: [] });
@@ -94,8 +92,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       console.warn("전월세 데이터 로드 실패:", e.message);
       updateProp(selectedProp.id, "jeonseData", { transactions: [], dongSummary: [] });
       updateProp(selectedProp.id, "wolseData", { transactions: [], dongSummary: [] });
-    } finally {
-      setRentLoading(false);
     }
   }
 
@@ -210,16 +206,20 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSelectedArea(area);
     updateProp(selectedProp.id, "selectedArea", area);
     if (selectedProp.lawdCd) {
-      await Promise.allSettled([
-        loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear),
-        loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear),
-      ]);
+      setAreaLoading(true);
+      try {
+        await Promise.allSettled([
+          loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear),
+          loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear),
+        ]);
+      } finally {
+        setAreaLoading(false);
+      }
     }
   }
 
   // 실거래 + 지역 분석 데이터 로드
   async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear) {
-    setTransactionLoading(true);
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
       const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear);
@@ -254,8 +254,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       }
     } catch (e) {
       console.warn("실거래 데이터 로드 실패:", e.message);
-    } finally {
-      setTransactionLoading(false);
     }
   }
 
@@ -342,13 +340,6 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               style={[styles.addressInput, { opacity: 0.7 }]}
             />
 
-            {dataCollecting && (
-              <View style={styles.collectingBox}>
-                <ActivityIndicator size="small" color={COLORS.primary} />
-                <Text style={styles.collectingText}>해당 매물 정보 수집 중...</Text>
-              </View>
-            )}
-
             <View style={styles.priceRow}>
               <TextInput
                 value={selectedProp.price ? Number(selectedProp.price).toLocaleString() : ""}
@@ -367,13 +358,26 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             </View>
           </View>
 
+          {/* 데이터 분석 오버레이 */}
+          {dataCollecting && (
+            <View style={styles.analyzingOverlay}>
+              <View style={styles.analyzingContent}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+                <Text style={styles.analyzingTitle}>해당 단지 데이터 분석 중...</Text>
+                <Text style={styles.analyzingSubText}>
+                  단지 정보 · 실거래가 · 전월세 데이터를 수집하고 있습니다
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* 건축물대장 단지 정보 */}
-          {complexInfoLoading ? (
+          {!dataCollecting && complexInfoLoading ? (
             <View style={styles.loadingCard}>
               <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.loadingText}>단지 정보 조회 중...</Text>
             </View>
-          ) : selectedProp.complexInfo ? (
+          ) : !dataCollecting && selectedProp.complexInfo ? (
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>단지 정보</Text>
               <View style={styles.complexGrid}>
@@ -484,7 +488,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           ) : null}
 
           {/* 평수 선택 */}
-          {selectedProp.lawdCd && areas.length > 0 && (
+          {!dataCollecting && selectedProp.lawdCd && areas.length > 0 && (
             <View style={styles.areaSection}>
               <Text style={styles.sectionTitle}>📐 평수 선택</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -517,13 +521,21 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             </View>
           )}
 
-          {/* 실거래 정보 테이블 (매매/전세/월세 탭) */}
-          {(transactionLoading || rentLoading) ? (
-            <View style={styles.loadingCard}>
-              <ActivityIndicator size="small" color={COLORS.primary} />
-              <Text style={styles.loadingText}>실거래 데이터 조회 중...</Text>
+          {/* 평수 변경 데이터 분석 오버레이 */}
+          {areaLoading && (
+            <View style={styles.analyzingOverlay}>
+              <View style={styles.analyzingContent}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+                <Text style={styles.analyzingTitle}>해당 평수에 대한 데이터 분석 중...</Text>
+                <Text style={styles.analyzingSubText}>
+                  실거래가 · 전월세 데이터를 수집하고 있습니다
+                </Text>
+              </View>
             </View>
-          ) : (selectedProp.dongSummary?.length > 0 || selectedProp.jeonseData?.dongSummary?.length > 0 || selectedProp.wolseData?.dongSummary?.length > 0) ? (
+          )}
+
+          {/* 실거래 정보 테이블 (매매/전세/월세 탭) */}
+          {(dataCollecting || areaLoading) ? null : (selectedProp.dongSummary?.length > 0 || selectedProp.jeonseData?.dongSummary?.length > 0 || selectedProp.wolseData?.dongSummary?.length > 0) ? (
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>📋 동별 실거래 정보</Text>
               {/* 매매/전세/월세 탭 */}
@@ -623,7 +635,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           ) : null}
 
           {/* 지역 시세 분석 */}
-          {analysisLoading ? (
+          {(dataCollecting || areaLoading) ? null : analysisLoading ? (
             <View style={styles.loadingCard}>
               <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.loadingText}>지역 시세 분석 중...</Text>
@@ -800,8 +812,21 @@ const styles = StyleSheet.create({
   dropdownName:  { color: COLORS.text, fontSize: 13, fontWeight: "700" },
   dropdownAddr:  { color: COLORS.textFaint, fontSize: 11, marginTop: 2 },
   dropdownMeta:  { color: COLORS.textFaint, fontSize: 10, marginTop: 1 },
-  collectingBox: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 14, marginBottom: 8, backgroundColor: COLORS.primary + "15", borderRadius: 10 },
-  collectingText:{ color: COLORS.primary, fontSize: 13, fontWeight: "600", marginLeft: 10 },
+  // 데이터 분석 오버레이
+  analyzingOverlay: {
+    backgroundColor: "rgba(15,15,25,0.85)",
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: 16,
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+    marginBottom: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  analyzingContent: { alignItems: "center", gap: 14 },
+  analyzingTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800", marginTop: 4 },
+  analyzingSubText: { color: COLORS.textFaint, fontSize: 12, textAlign: "center", lineHeight: 18 },
 
   // 평수 선택
   areaSection: { marginBottom: 16 },
