@@ -47,6 +47,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [dataCollecting, setDataCollecting] = useState(false);
   const [complexInfoLoading, setComplexInfoLoading] = useState(false);
   const [txTab, setTxTab] = useState("매매"); // 매매/전세/월세
+  const [priceRangeTab, setPriceRangeTab] = useState("최근 1년"); // 최근 1년/전체기간
   const [areaLoading, setAreaLoading] = useState(false);
 
   // 전체 데이터 캐시 (평수 변경 시 클라이언트 필터링용)
@@ -133,6 +134,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "neighborComparison", []);
       updateProp(selectedProp.id, "recentPrice", null);
       updateProp(selectedProp.id, "highestPrice", null);
+      updateProp(selectedProp.id, "lowestPrice", null);
+      updateProp(selectedProp.id, "allTimePriceRange", null);
       updateProp(selectedProp.id, "regionAvg", null);
       updateProp(selectedProp.id, "dongAvg", null);
       updateProp(selectedProp.id, "pricePercentile", null);
@@ -213,7 +216,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
   // 평수 선택 (캐시된 전체 데이터에서 클라이언트 필터링, 없으면 서버 호출)
   async function handleAreaSelect(area) {
-    setSelectedArea(area);
+    setSelectedArea(String(area));
     updateProp(selectedProp.id, "selectedArea", area);
     if (!selectedProp.lawdCd) return;
 
@@ -229,6 +232,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           if (cachedTx.dongSummary?.length > 0) {
             updateProp(selectedProp.id, "recentPrice", Math.max(...cachedTx.dongSummary.map(d => d.recentPrice)));
             updateProp(selectedProp.id, "highestPrice", Math.max(...cachedTx.dongSummary.map(d => d.highestPrice)));
+            updateProp(selectedProp.id, "lowestPrice", Math.min(...cachedTx.dongSummary.map(d => d.lowestPrice)));
+            if (cachedTx.allTimePriceRange) {
+              updateProp(selectedProp.id, "allTimePriceRange", cachedTx.allTimePriceRange);
+            }
           }
         }
         if (cachedRent) {
@@ -265,10 +272,18 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       if (data.dongSummary && data.dongSummary.length > 0) {
         const allRecent = data.dongSummary.map(d => d.recentPrice);
         const allHighest = data.dongSummary.map(d => d.highestPrice);
+        const allLowest = data.dongSummary.map(d => d.lowestPrice);
         const recentPrice = Math.max(...allRecent);
         const highestPrice = Math.max(...allHighest);
+        const lowestPrice = Math.min(...allLowest);
         updateProp(selectedProp.id, "recentPrice", recentPrice);
         updateProp(selectedProp.id, "highestPrice", highestPrice);
+        updateProp(selectedProp.id, "lowestPrice", lowestPrice);
+      }
+
+      // 전체기간 최고/최저가 저장
+      if (data.allTimePriceRange) {
+        updateProp(selectedProp.id, "allTimePriceRange", data.allTimePriceRange);
       }
 
       // 지역 시세 분석 (fire-and-forget: 매매 데이터 먼저 표시, 분석은 백그라운드)
@@ -670,6 +685,56 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             </View>
           ) : null}
 
+          {/* 최고/최저 거래가 */}
+          {(dataCollecting || areaLoading) ? null : selectedProp.dongSummary?.length > 0 && (() => {
+            const ds = selectedProp.dongSummary;
+            const recentHighest = ds.reduce((max, d) => d.highestPrice > max.highestPrice ? d : max, ds[0]);
+            const recentLowest = ds.reduce((min, d) => d.lowestPrice < min.lowestPrice ? d : min, ds[0]);
+            const allTime = selectedProp.allTimePriceRange;
+            const isAllTime = priceRangeTab === "전체기간" && allTime?.highest && allTime?.lowest;
+            const highest = isAllTime
+              ? { price: allTime.highest.price, date: allTime.highest.date, dong: allTime.highest.dong, floor: allTime.highest.floor, area: allTime.highest.area }
+              : { price: recentHighest.highestPrice, date: recentHighest.highestDate, dong: recentHighest.dong, floor: recentHighest.highestFloor, area: recentHighest.area };
+            const lowest = isAllTime
+              ? { price: allTime.lowest.price, date: allTime.lowest.date, dong: allTime.lowest.dong, floor: allTime.lowest.floor, area: allTime.lowest.area }
+              : { price: recentLowest.lowestPrice, date: recentLowest.lowestDate, dong: recentLowest.dong, floor: recentLowest.lowestFloor, area: recentLowest.area };
+            const gap = highest.price - lowest.price;
+            return (
+              <View style={styles.card}>
+                <Text style={styles.sectionTitle}>📈 최고·최저 거래가</Text>
+                <View style={styles.priceRangeTabRow}>
+                  {["최근 1년", "전체기간"].map(tab => (
+                    <TouchableOpacity
+                      key={tab}
+                      onPress={() => setPriceRangeTab(tab)}
+                      style={[styles.priceRangeTabBtn, priceRangeTab === tab && styles.priceRangeTabBtnActive]}
+                    >
+                      <Text style={[styles.priceRangeTabText, priceRangeTab === tab && styles.priceRangeTabTextActive]}>{tab}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.priceRangeRow}>
+                  <View style={[styles.priceRangeCard, { borderColor: "rgba(245,158,11,0.3)", backgroundColor: "rgba(245,158,11,0.08)" }]}>
+                    <Text style={[styles.priceRangeLabel, { color: "#f59e0b" }]}>최고 거래가</Text>
+                    <Text style={[styles.priceRangeValue, { color: "#f59e0b" }]}>{formatPrice(highest.price)}</Text>
+                    <Text style={styles.priceRangeMeta}>{highest.date} · {highest.dong}동 {highest.floor}층</Text>
+                    {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(highest.area)}평</Text>}
+                  </View>
+                  <View style={[styles.priceRangeCard, { borderColor: "rgba(59,130,246,0.3)", backgroundColor: "rgba(59,130,246,0.08)" }]}>
+                    <Text style={[styles.priceRangeLabel, { color: "#3b82f6" }]}>최저 거래가</Text>
+                    <Text style={[styles.priceRangeValue, { color: "#3b82f6" }]}>{formatPrice(lowest.price)}</Text>
+                    <Text style={styles.priceRangeMeta}>{lowest.date} · {lowest.dong}동 {lowest.floor}층</Text>
+                    {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(lowest.area)}평</Text>}
+                  </View>
+                </View>
+                <View style={styles.priceGapRow}>
+                  <Text style={styles.priceGapLabel}>가격 변동폭</Text>
+                  <Text style={styles.priceGapValue}>{formatPrice(gap)}</Text>
+                </View>
+              </View>
+            );
+          })()}
+
           {/* 지역 시세 분석 */}
           {(dataCollecting || areaLoading) ? null : analysisLoading ? (
             <View style={styles.loadingCard}>
@@ -891,6 +956,21 @@ const styles = StyleSheet.create({
   txTabText:     { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
   txTabTextActive: { color: "#818cf8" },
   noDataText:    { color: COLORS.textFaint, fontSize: 12, textAlign: "center", paddingVertical: 20 },
+
+  // 최고/최저 거래가
+  priceRangeTabRow:    { flexDirection: "row", marginBottom: 12, gap: 6 },
+  priceRangeTabBtn:    { flex: 1, paddingVertical: 7, borderRadius: 8, borderWidth: 1.5, borderColor: "rgba(255,255,255,0.1)", alignItems: "center" },
+  priceRangeTabBtnActive: { borderColor: "#22c55e", backgroundColor: "rgba(34,197,94,0.12)" },
+  priceRangeTabText:   { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
+  priceRangeTabTextActive: { color: "#22c55e" },
+  priceRangeRow:   { flexDirection: "row", gap: 10, marginBottom: 12 },
+  priceRangeCard:  { flex: 1, borderWidth: 1.5, borderRadius: 12, padding: 14, alignItems: "center" },
+  priceRangeLabel: { fontSize: 11, fontWeight: "700", marginBottom: 6 },
+  priceRangeValue: { fontSize: 18, fontWeight: "800", marginBottom: 6 },
+  priceRangeMeta:  { color: COLORS.textFaint, fontSize: 10, lineHeight: 16 },
+  priceGapRow:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(255,255,255,0.05)", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
+  priceGapLabel:   { color: COLORS.textMuted, fontSize: 12, fontWeight: "600" },
+  priceGapValue:   { color: COLORS.text, fontSize: 14, fontWeight: "800" },
 
   // 지역 시세 분석
   percentileSection: { marginBottom: 14 },

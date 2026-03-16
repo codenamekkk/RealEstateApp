@@ -674,6 +674,15 @@ app.get("/api/apartment/transactions", async (req, res) => {
     const monthList = getMonthRange(numMonths);
     await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
 
+    // 전체기간 데이터를 위해 추가 캐시 확보 (백그라운드, 응답 차단 안함)
+    const allTimeMonthCount = buildYear
+      ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, 120)
+      : 60;
+    const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
+    if (allTimeMonths.length > 0) {
+      Promise.allSettled(allTimeMonths.map(ym => ensureCached(lawdCd, ym))).catch(() => {});
+    }
+
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
     const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
@@ -683,14 +692,21 @@ app.get("/api/apartment/transactions", async (req, res) => {
       params.push(parseInt(buildYear));
     }
 
+    // 최근 데이터 조회 (month 필터 적용)
+    let recentQuery = query + ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
+    const recentParams = [...params, ...monthList];
+
     if (area && area !== "전체") {
       const areaNum = parseFloat(area);
       query += ` AND exclu_use_ar BETWEEN ? AND ?`;
       params.push(areaNum - 2, areaNum + 2);
+      recentQuery += ` AND exclu_use_ar BETWEEN ? AND ?`;
+      recentParams.push(areaNum - 2, areaNum + 2);
     }
+    recentQuery += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
     query += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
 
-    const rows = db.prepare(query).all(...params);
+    const rows = db.prepare(recentQuery).all(...recentParams);
 
     // 동별 요약 생성
     const dongMap = {};
@@ -710,12 +726,20 @@ app.get("/api/apartment/transactions", async (req, res) => {
           highestPrice: r.deal_amount,
           highestDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
           highestFloor: r.floor,
+          lowestPrice: r.deal_amount,
+          lowestDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+          lowestFloor: r.floor,
         };
       } else {
         if (r.deal_amount > dongMap[key].highestPrice) {
           dongMap[key].highestPrice = r.deal_amount;
           dongMap[key].highestDate = `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`;
           dongMap[key].highestFloor = r.floor;
+        }
+        if (r.deal_amount < dongMap[key].lowestPrice) {
+          dongMap[key].lowestPrice = r.deal_amount;
+          dongMap[key].lowestDate = `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`;
+          dongMap[key].lowestFloor = r.floor;
         }
       }
     }
@@ -729,9 +753,35 @@ app.get("/api/apartment/transactions", async (req, res) => {
       buildYear: r.build_year,
     }));
 
+    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서)
+    let allTimeQuery = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
+    const allTimeParams = [lawdCd, cleanName, `${cleanName}%`, cleanName];
+    if (buildYear) {
+      allTimeQuery += ` AND build_year = ?`;
+      allTimeParams.push(parseInt(buildYear));
+    }
+    if (area && area !== "전체") {
+      const areaNum2 = parseFloat(area);
+      allTimeQuery += ` AND exclu_use_ar BETWEEN ? AND ?`;
+      allTimeParams.push(areaNum2 - 2, areaNum2 + 2);
+    }
+    const formatRow = (r) => r ? {
+      price: r.deal_amount,
+      date: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
+      dong: r.apt_dong || "미확인",
+      floor: r.floor,
+      area: r.exclu_use_ar,
+    } : null;
+    const allTimeHighest = db.prepare(allTimeQuery + ` ORDER BY deal_amount DESC LIMIT 1`).get(...allTimeParams);
+    const allTimeLowest = db.prepare(allTimeQuery + ` ORDER BY deal_amount ASC LIMIT 1`).get(...allTimeParams);
+
     res.json({
       transactions,
       dongSummary: Object.values(dongMap),
+      allTimePriceRange: {
+        highest: formatRow(allTimeHighest),
+        lowest: formatRow(allTimeLowest),
+      },
     });
   } catch (e) {
     console.error("실거래 조회 실패:", e.message, e.stack);
