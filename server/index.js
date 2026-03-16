@@ -942,6 +942,31 @@ const BUILDING_API_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService";
 const HOUSING_API_BASE = "https://apis.data.go.kr/1613000";
 
 /**
+ * 건축물대장 API 응답 파싱 (에러 감지 + 재시도 포함)
+ * data.go.kr API는 rate limit 시 body 없이 에러 헤더만 반환
+ */
+async function fetchBuildingApi(url, label, retries = 1) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      console.log(`[BUILDING] ${label} 재시도 ${attempt}/${retries} (300ms 대기)`);
+      await new Promise(r => setTimeout(r, 300));
+    }
+    const res = await fetch(url, { timeout: 15000 });
+    const data = await res.json();
+    const resultCode = data?.response?.header?.resultCode;
+    const resultMsg = data?.response?.header?.resultMsg || "";
+    if (resultCode && resultCode !== "00") {
+      console.warn(`[BUILDING] ${label} API 에러: code=${resultCode}, msg=${resultMsg}`);
+      if (attempt < retries) continue; // 재시도
+      return { items: null, error: resultMsg };
+    }
+    const items = data?.response?.body?.items?.item;
+    return { items: items || null, error: null };
+  }
+  return { items: null, error: "max retries exceeded" };
+}
+
+/**
  * 단지목록 API: 법정동코드 10자리로 kaptCode 조회
  */
 async function findKaptCode(bjdCode10, aptName) {
@@ -1091,9 +1116,8 @@ async function resolveBjdongCd(sigunguCd, dongNm) {
 async function fetchBuildingTitle(sigunguCd, bjdongCd, bun, ji) {
   const url = `${BUILDING_API_BASE}/getBrTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1&_type=json`;
   console.log("[BUILDING] 표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const res = await fetch(url, { timeout: 15000 });
-  const data = await res.json();
-  const items = data?.response?.body?.items?.item;
+  const { items, error } = await fetchBuildingApi(url, "표제부", 1);
+  if (error) console.warn("[BUILDING] 표제부 조회 실패:", error);
   if (!items) return [];
   return Array.isArray(items) ? items : [items];
 }
@@ -1104,12 +1128,18 @@ async function fetchBuildingTitle(sigunguCd, bjdongCd, bun, ji) {
 async function fetchBuildingRecapTitle(sigunguCd, bjdongCd, bun, ji) {
   const url = `${BUILDING_API_BASE}/getBrRecapTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=10&pageNo=1&_type=json`;
   console.log("[BUILDING] 총괄표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const res = await fetch(url, { timeout: 15000 });
-  const data = await res.json();
-  const items = data?.response?.body?.items?.item;
-  if (!items) return null;
+  const { items, error } = await fetchBuildingApi(url, "총괄표제부", 2);
+  if (error) console.warn("[BUILDING] 총괄표제부 조회 실패:", error);
+  if (!items) {
+    console.warn("[BUILDING] 총괄표제부 데이터 없음 (items=null)");
+    return null;
+  }
   const arr = Array.isArray(items) ? items : [items];
-  return arr[0] || null;
+  const result = arr[0] || null;
+  if (result) {
+    console.log(`[BUILDING] 총괄표제부 확인: vlRat=${result.vlRat}, bcRat=${result.bcRat}, totPkngCnt=${result.totPkngCnt}, hhldCnt=${result.hhldCnt}`);
+  }
+  return result;
 }
 
 /**
@@ -1118,9 +1148,8 @@ async function fetchBuildingRecapTitle(sigunguCd, bjdongCd, bun, ji) {
 async function fetchBuildingArea(sigunguCd, bjdongCd, bun, ji) {
   const url = `${BUILDING_API_BASE}/getBrExposPubuseAreaInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=500&pageNo=1&_type=json`;
   console.log("[BUILDING] 전유면적 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const res = await fetch(url, { timeout: 15000 });
-  const data = await res.json();
-  const items = data?.response?.body?.items?.item;
+  const { items, error } = await fetchBuildingApi(url, "전유면적", 1);
+  if (error) console.warn("[BUILDING] 전유면적 조회 실패:", error);
   if (!items) return [];
   return Array.isArray(items) ? items : [items];
 }
@@ -1150,14 +1179,19 @@ app.get("/api/apartment/complex-info", async (req, res) => {
 
     console.log(`[COMPLEX] bjdongCd 확인: ${bjdongCd}`);
 
-    // 표제부 + 총괄표제부 + 전유면적 + 공동주택 기본정보 동시 조회
+    // 건축물대장 API는 동일 서비스 동시 호출 시 rate limit 발생 가능
+    // → 건축물대장 3건은 순차 호출, 공동주택 코드 조회는 별도 서비스이므로 병렬
     const bjdCode10 = lawdCd + bjdongCd;
-    const [titleItems, recapTitle, areaItems, kaptCode] = await Promise.all([
-      fetchBuildingTitle(lawdCd, bjdongCd, bun, ji),
-      fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji),
-      fetchBuildingArea(lawdCd, bjdongCd, bun, ji),
+    const [buildingResult, kaptCode] = await Promise.all([
+      (async () => {
+        const titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji);
+        const recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji);
+        const areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji);
+        return { titleItems, recapTitle, areaItems };
+      })(),
       findKaptCode(bjdCode10, req.query.aptName || ""),
     ]);
+    const { titleItems, recapTitle, areaItems } = buildingResult;
 
     // kaptCode로 공동주택 기본정보 조회
     const housingInfo = kaptCode ? await fetchHousingBasicInfo(kaptCode) : null;
