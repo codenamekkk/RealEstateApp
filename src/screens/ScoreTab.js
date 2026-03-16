@@ -69,10 +69,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     } catch { setAreas([]); }
   }
 
-  async function loadComplexInfo(lawdCd, address, aptName) {
+  async function loadComplexInfo(lawdCd, address, aptName, bjdongCd) {
     setComplexInfoLoading(true);
     try {
-      const info = await getComplexInfo(lawdCd, address, aptName);
+      const info = await getComplexInfo(lawdCd, address, aptName, bjdongCd);
       updateProp(selectedProp.id, "complexInfo", info);
     } catch (e) {
       console.warn("단지 정보 조회 실패:", e.message);
@@ -126,6 +126,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     if (item.buildYear) {
       updateProp(selectedProp.id, "buildYear", parseInt(item.buildYear));
     }
+    if (item.bjdongCd) {
+      updateProp(selectedProp.id, "bjdongCd", item.bjdongCd);
+    }
 
     try {
       const regionData = await getRegionCode(item.address);
@@ -140,7 +143,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
       // 건축물대장 단지 정보 조회 (병렬)
       const txPromise = loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear);
-      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address, item.aptName);
+      const complexPromise = loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd);
       await Promise.all([txPromise, complexPromise]);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);

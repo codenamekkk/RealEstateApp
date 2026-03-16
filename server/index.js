@@ -408,6 +408,7 @@ app.get("/api/search/apartment", async (req, res) => {
           const krebUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=5&${condType}&${condAddr}&${condName}`;
           const krebRes = await fetch(krebUrl, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] }));
           for (const item of (krebRes.data || [])) {
+            const pnu = String(item["필지고유번호"] || "");
             jusoResults.push({
               aptName: (item["단지명_공시가격"] || "").trim(),
               address: (item["주소"] || "").trim(),
@@ -415,6 +416,7 @@ app.get("/api/search/apartment", async (req, res) => {
               units: parseInt(item["세대수"]) || null,
               buildings: parseInt(item["동수"]) || null,
               complexId: item["단지고유번호"] || null,
+              bjdongCd: pnu.length >= 10 ? pnu.substring(5, 10) : null,
             });
           }
         }
@@ -439,6 +441,7 @@ app.get("/api/search/apartment", async (req, res) => {
     const seen = new Set();
     const allItems = [...jusoResults];
     for (const item of [...(nameRes.data || []), ...(addrRes.data || [])]) {
+      const pnu = String(item["필지고유번호"] || "");
       allItems.push({
         aptName: (item["단지명_공시가격"] || "").trim(),
         address: (item["주소"] || "").trim(),
@@ -446,6 +449,7 @@ app.get("/api/search/apartment", async (req, res) => {
         units: parseInt(item["세대수"]) || null,
         buildings: parseInt(item["동수"]) || null,
         complexId: item["단지고유번호"] || null,
+        bjdongCd: pnu.length >= 10 ? pnu.substring(5, 10) : null,
       });
     }
 
@@ -872,8 +876,11 @@ app.get("/api/apartment/complex-info", async (req, res) => {
 
     console.log(`[COMPLEX] 파싱 결과: dongNm=${dongNm}, bun=${bun}, ji=${ji}, lawdCd=${lawdCd}`);
 
-    // bjdongCd 조회
-    const bjdongCd = await resolveBjdongCd(lawdCd, dongNm);
+    // bjdongCd 조회: 쿼리 파라미터로 전달된 값 우선, 없으면 단지목록 API로 조회
+    let bjdongCd = req.query.bjdongCd || null;
+    if (!bjdongCd) {
+      bjdongCd = await resolveBjdongCd(lawdCd, dongNm);
+    }
     if (!bjdongCd) {
       return res.status(404).json({ error: `법정동코드를 찾을 수 없습니다: ${dongNm}` });
     }
