@@ -160,6 +160,8 @@ const VWORLD_API_KEY = process.env.VWORLD_API_KEY || "";
 if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
 if (!BUILDING_API_KEY) console.warn("⚠️ BUILDING_API_KEY 환경변수가 설정되지 않았습니다");
+if (!VWORLD_API_KEY) console.warn("⚠️ VWORLD_API_KEY 환경변수가 설정되지 않았습니다");
+console.log(`[ENV] VWORLD_API_KEY: ${VWORLD_API_KEY ? VWORLD_API_KEY.substring(0, 8) + '...' : 'NOT SET'}`);
 
 // ── Express + Socket.io ─────────────────────────────────────────
 const app = express();
@@ -1152,13 +1154,16 @@ async function fetchHousingDetailInfo(kaptCode) {
  * 대지권등록정보 API: PNU로 대지면적 조회 (용적률 계산용)
  */
 async function fetchLandArea(pnu) {
-  if (!VWORLD_API_KEY || !pnu) return null;
+  console.log(`[LAND] fetchLandArea 호출: pnu=${pnu}, VWORLD_KEY=${VWORLD_API_KEY ? 'SET' : 'NOT SET'}`);
+  if (!VWORLD_API_KEY || !pnu) { console.log(`[LAND] 조기 반환: key=${!!VWORLD_API_KEY}, pnu=${!!pnu}`); return null; }
   try {
     const url = `https://api.vworld.kr/ned/data/ldaregList?key=${VWORLD_API_KEY}&pnu=${pnu}&format=json&numOfRows=1`;
     const res = await fetch(url, { timeout: 10000 });
-    const data = await res.json();
+    const text = await res.text();
+    console.log(`[LAND] API 응답: ${text.substring(0, 200)}`);
+    const data = JSON.parse(text);
     const item = data?.ldaregVOList?.ldaregVOList?.[0];
-    if (!item?.ldaQotaRate) return null;
+    if (!item?.ldaQotaRate) { console.log(`[LAND] ldaQotaRate 없음`); return null; }
     // ldaQotaRate: "42.25/12524.1" → 분모가 대지면적
     const parts = item.ldaQotaRate.split("/");
     if (parts.length === 2) {
