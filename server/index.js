@@ -1077,15 +1077,35 @@ async function findKaptCode(bjdCode10, aptName) {
     const items = data?.response?.body?.items;
     if (!items || !Array.isArray(items)) return null;
 
-    // 이름 매칭
-    const cleanName = aptName.replace(/아파트|단지|APT/gi, "").trim();
-    const match = items.find(it =>
-      it.kaptName && (
-        it.kaptName.includes(cleanName) ||
-        cleanName.includes(it.kaptName.replace(/^[가-힣]+(?:시|구|동)/, ""))
-      )
-    );
-    return match ? match.kaptCode : null;
+    // 3단계 엄격 매칭: 정확일치 → startsWith → includes(최단 1개)
+    const normalize = (s) => (s || "").replace(/아파트|단지|APT|\(.*?\)/gi, "").trim();
+    const cleanName = normalize(aptName);
+    if (!cleanName) return null;
+
+    const candidates = items.filter(it => it.kaptName).map(it => ({
+      code: it.kaptCode,
+      name: normalize(it.kaptName),
+      raw: it.kaptName,
+    }));
+
+    // Tier 1: 정확 일치
+    const exact = candidates.find(c => c.name === cleanName);
+    if (exact) { console.log(`[HOUSING] kaptCode 매칭 (정확일치): "${exact.raw}"`); return exact.code; }
+
+    // Tier 2: startsWith (짧은 이름 우선)
+    const startsWith = candidates
+      .filter(c => c.name.startsWith(cleanName) || cleanName.startsWith(c.name))
+      .sort((a, b) => a.name.length - b.name.length);
+    if (startsWith.length) { console.log(`[HOUSING] kaptCode 매칭 (startsWith): "${startsWith[0].raw}"`); return startsWith[0].code; }
+
+    // Tier 3: includes (최단 1개만, 최후 수단)
+    const includes = candidates
+      .filter(c => c.name.includes(cleanName) || cleanName.includes(c.name))
+      .sort((a, b) => a.name.length - b.name.length);
+    if (includes.length) { console.log(`[HOUSING] kaptCode 매칭 (includes): "${includes[0].raw}"`); return includes[0].code; }
+
+    console.log(`[HOUSING] kaptCode 매칭 실패: "${aptName}" (후보: ${candidates.map(c => c.raw).join(", ")})`);
+    return null;
   } catch (e) {
     console.error("[HOUSING] 단지목록 조회 실패:", e.message);
     return null;
@@ -1281,18 +1301,25 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     // 건축물대장 API는 동일 서비스 동시 호출 시 rate limit 발생 가능
     // → 건축물대장 3건은 순차 호출, 공동주택 코드 조회는 별도 서비스이므로 병렬
     const bjdCode10 = lawdCd + bjdongCd;
-    const [buildingResult, kaptCode] = await Promise.all([
-      (async () => {
-        let titleItems = [];
-        let recapTitle = null;
-        let areaItems = [];
-        try { titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 표제부 조회 예외:", e.message); }
-        try { recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 총괄표제부 조회 예외:", e.message); }
-        try { areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 전유면적 조회 예외:", e.message); }
-        return { titleItems, recapTitle, areaItems };
-      })(),
-      findKaptCode(bjdCode10, req.query.aptName || ""),
-    ]);
+    let kaptCode = req.query.kaptCode || null;
+
+    const buildingPromise = (async () => {
+      let titleItems = [];
+      let recapTitle = null;
+      let areaItems = [];
+      try { titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 표제부 조회 예외:", e.message); }
+      try { recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 총괄표제부 조회 예외:", e.message); }
+      try { areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 전유면적 조회 예외:", e.message); }
+      return { titleItems, recapTitle, areaItems };
+    })();
+
+    // kaptCode가 전달되면 재매칭 없이 직접 사용, 없으면 이름 매칭으로 조회
+    const kaptPromise = kaptCode
+      ? Promise.resolve(kaptCode)
+      : findKaptCode(bjdCode10, req.query.aptName || "");
+
+    const [buildingResult, resolvedKaptCode] = await Promise.all([buildingPromise, kaptPromise]);
+    kaptCode = resolvedKaptCode;
     const { titleItems, recapTitle, areaItems } = buildingResult;
 
     // kaptCode로 공동주택 기본정보 조회
@@ -1308,6 +1335,13 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     let bcRat = parseFloat(recapTitle?.bcRat) || 0;
     let vlRat = parseFloat(recapTitle?.vlRat) || 0;
     let totArea = parseFloat(recapTitle?.totArea) || 0;
+
+    // 총괄표제부에 용적률/건폐율이 없으면(구대장 등) 표제부에서 폴백
+    if ((!bcRat || !vlRat) && titleItems.length > 0) {
+      if (!bcRat) bcRat = parseFloat(titleItems[0].bcRat) || 0;
+      if (!vlRat) vlRat = parseFloat(titleItems[0].vlRat) || 0;
+      if (bcRat || vlRat) console.log(`[COMPLEX] 총괄표제부 미등록 → 표제부 폴백: bcRat=${bcRat}, vlRat=${vlRat}`);
+    }
 
     // 표제부에서 동별 정보 (최고층, 지하층, 사용승인일)
     let maxFloor = 0;
@@ -1380,6 +1414,7 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     const parkingPerUnit = totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0;
 
     const result = {
+      kaptCode: kaptCode || null,
       buildingCount: titleItems.length,
       buildingNames,
       maxFloor,

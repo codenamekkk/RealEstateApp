@@ -76,12 +76,13 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     } catch { setAreas([]); }
   }
 
-  async function loadComplexInfo(lawdCd, address, aptName, bjdongCd, reqId) {
+  async function loadComplexInfo(lawdCd, address, aptName, bjdongCd, reqId, kaptCode) {
     setComplexInfoLoading(true);
     try {
-      const info = await getComplexInfo(lawdCd, address, aptName, bjdongCd);
+      const info = await getComplexInfo(lawdCd, address, aptName, bjdongCd, kaptCode);
       if (reqId && selectRequestId.current !== reqId) return;
       updateProp(selectedProp.id, "complexInfo", info);
+      if (info?.kaptCode) updateProp(selectedProp.id, "kaptCode", info.kaptCode);
     } catch (e) {
       console.warn("단지 정보 조회 실패:", e.message);
       if (reqId && selectRequestId.current !== reqId) return;
@@ -147,6 +148,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "pricePercentile", null);
       updateProp(selectedProp.id, "dongPercentile", null);
       updateProp(selectedProp.id, "complexInfo", null);
+      updateProp(selectedProp.id, "kaptCode", null);
       updateProp(selectedProp.id, "jeonseData", null);
       updateProp(selectedProp.id, "wolseData", null);
       return;
@@ -192,6 +194,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     updateProp(selectedProp.id, "dongPercentile", null);
     updateProp(selectedProp.id, "neighborComparison", []);
     updateProp(selectedProp.id, "complexInfo", null);
+    updateProp(selectedProp.id, "kaptCode", null);
     updateProp(selectedProp.id, "jeonseData", null);
     updateProp(selectedProp.id, "wolseData", null);
     allDataCache.current = { transactions: null, rent: null };
@@ -213,7 +216,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, regionData.umdNm),
         loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear, regionData.guNm, reqId),
         loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, regionData.umdNm),
-        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId),
+        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId, null),
       ]);
       if (selectRequestId.current !== reqId) return;
 
