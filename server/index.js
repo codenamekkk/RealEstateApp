@@ -155,6 +155,7 @@ const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
 const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
 const MOLIT_HOUSING_API_KEY = process.env.MOLIT_HOUSING_API_KEY || "";
 const JUSO_API_KEY = process.env.JUSO_API_KEY || "";
+const VWORLD_API_KEY = process.env.VWORLD_API_KEY || "";
 
 if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
@@ -724,9 +725,12 @@ app.get("/api/apartment/transactions", async (req, res) => {
     await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
 
     // 전체기간 데이터를 위해 추가 캐시 확보 (완료 대기 후 쿼리 실행)
+    // 국토교통부 API는 2006년부터 데이터 제공 → 2006년 1월까지 조회
+    const apiStartYear = 2006;
+    const maxMonths = (new Date().getFullYear() - apiStartYear) * 12 + new Date().getMonth() + 1;
     const allTimeMonthCount = buildYear
-      ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, 120)
-      : 60;
+      ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, maxMonths)
+      : maxMonths;
     const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
     if (allTimeMonths.length > 0) {
       await Promise.allSettled(allTimeMonths.map(ym => ensureCached(lawdCd, ym)));
@@ -1129,6 +1133,46 @@ async function fetchHousingBasicInfo(kaptCode) {
 }
 
 /**
+ * 공동주택 상세정보 API: kaptCode로 주차대수 등 상세정보 조회
+ */
+async function fetchHousingDetailInfo(kaptCode) {
+  if (!MOLIT_HOUSING_API_KEY || !kaptCode) return null;
+  try {
+    const url = `${HOUSING_API_BASE}/AptBasisInfoServiceV4/getAphusDtlInfoV4?ServiceKey=${MOLIT_HOUSING_API_KEY}&kaptCode=${kaptCode}`;
+    const res = await fetch(url, { timeout: 10000 });
+    const data = await res.json();
+    return data?.response?.body?.item || null;
+  } catch (e) {
+    console.error("[HOUSING] 상세정보 조회 실패:", e.message);
+    return null;
+  }
+}
+
+/**
+ * 대지권등록정보 API: PNU로 대지면적 조회 (용적률 계산용)
+ */
+async function fetchLandArea(pnu) {
+  if (!VWORLD_API_KEY || !pnu) return null;
+  try {
+    const url = `https://api.vworld.kr/ned/data/ldaregList?key=${VWORLD_API_KEY}&pnu=${pnu}&format=json&numOfRows=1`;
+    const res = await fetch(url, { timeout: 10000 });
+    const data = await res.json();
+    const item = data?.ldaregVOList?.ldaregVOList?.[0];
+    if (!item?.ldaQotaRate) return null;
+    // ldaQotaRate: "42.25/12524.1" → 분모가 대지면적
+    const parts = item.ldaQotaRate.split("/");
+    if (parts.length === 2) {
+      const area = parseFloat(parts[1]);
+      if (area > 0) { console.log(`[LAND] 대지권 대지면적: ${area}㎡`); return area; }
+    }
+    return null;
+  } catch (e) {
+    console.warn("[LAND] 대지권등록정보 조회 실패:", e.message);
+    return null;
+  }
+}
+
+/**
  * 주소 파싱: KREB 주소에서 동이름, 번지를 추출
  * 예: "서울특별시 동대문구 청량리동 60" → { dongNm: "청량리동", bun: "0060", ji: "0000" }
  * 예: "서울특별시 동대문구 청량리동 60-5" → { dongNm: "청량리동", bun: "0060", ji: "0005" }
@@ -1262,15 +1306,22 @@ async function fetchBuildingRecapTitle(sigunguCd, bjdongCd, bun, ji) {
 }
 
 /**
- * 건축물대장 전유공용면적 조회
+ * 건축물대장 전유공용면적 조회 (페이지네이션)
  */
 async function fetchBuildingArea(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_BASE}/getBrExposPubuseAreaInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=500&pageNo=1&_type=json`;
-  console.log("[BUILDING] 전유면적 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const { items, error } = await fetchBuildingApi(url, "전유면적", 1);
-  if (error) console.warn("[BUILDING] 전유면적 조회 실패:", error);
-  if (!items) return [];
-  return Array.isArray(items) ? items : [items];
+  let allItems = [];
+  for (let page = 1; page <= 20; page++) {
+    const url = `${BUILDING_API_BASE}/getBrExposPubuseAreaInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=${page}&_type=json`;
+    if (page === 1) console.log("[BUILDING] 전유면적 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
+    const { items, error } = await fetchBuildingApi(url, `전유면적(p${page})`, 1);
+    if (error) { console.warn("[BUILDING] 전유면적 조회 실패:", error); break; }
+    if (!items) break;
+    const arr = Array.isArray(items) ? items : [items];
+    allItems.push(...arr);
+    if (arr.length < 100) break; // 마지막 페이지
+  }
+  console.log(`[BUILDING] 전유면적 총 ${allItems.length}건 조회`);
+  return allItems;
 }
 
 // ── 건축물대장 단지 정보 조회 엔드포인트 ─────────────────────────────
@@ -1322,8 +1373,10 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     kaptCode = resolvedKaptCode;
     const { titleItems, recapTitle, areaItems } = buildingResult;
 
-    // kaptCode로 공동주택 기본정보 조회
-    const housingInfo = kaptCode ? await fetchHousingBasicInfo(kaptCode) : null;
+    // kaptCode로 공동주택 기본정보 + 상세정보 병렬 조회
+    const [housingInfo, housingDetail] = kaptCode
+      ? await Promise.all([fetchHousingBasicInfo(kaptCode), fetchHousingDetailInfo(kaptCode)])
+      : [null, null];
 
     if (titleItems.length === 0 && !recapTitle && !housingInfo) {
       return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
@@ -1332,6 +1385,12 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     // 총괄표제부에서 단지 전체 정보 (용적률, 건폐율, 주차, 세대수)
     let totalHhld = parseInt(recapTitle?.hhldCnt) || 0;
     let totalPkng = parseInt(recapTitle?.totPkngCnt) || 0;
+
+    // 총괄표제부에 주차 정보 없으면 공동주택 상세정보에서 폴백
+    if (!totalPkng && housingDetail) {
+      totalPkng = (parseInt(housingDetail.kaptdPcnt) || 0) + (parseInt(housingDetail.kaptdPcntu) || 0);
+      if (totalPkng) console.log(`[COMPLEX] 총괄표제부 주차 미등록 → 공동주택 상세정보 폴백: ${totalPkng}대`);
+    }
     let bcRat = parseFloat(recapTitle?.bcRat) || 0;
     let vlRat = parseFloat(recapTitle?.vlRat) || 0;
     let totArea = parseFloat(recapTitle?.totArea) || 0;
@@ -1341,6 +1400,16 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       if (!bcRat) bcRat = parseFloat(titleItems[0].bcRat) || 0;
       if (!vlRat) vlRat = parseFloat(titleItems[0].vlRat) || 0;
       if (bcRat || vlRat) console.log(`[COMPLEX] 총괄표제부 미등록 → 표제부 폴백: bcRat=${bcRat}, vlRat=${vlRat}`);
+    }
+
+    // 표제부에도 용적률 없으면 대지권등록정보 API로 대지면적 조회하여 계산
+    if (!vlRat && totArea > 0) {
+      const pnu = lawdCd + bjdongCd + "1" + bun + ji; // 19자리 PNU 구성 (대장구분: 1=토지)
+      const landArea = await fetchLandArea(pnu);
+      if (landArea) {
+        vlRat = Math.round((totArea / landArea) * 10000) / 100;
+        console.log(`[COMPLEX] 대지권 폴백: totArea=${totArea}, 대지면적=${landArea}, vlRat=${vlRat}%`);
+      }
     }
 
     // 표제부에서 동별 정보 (최고층, 지하층, 사용승인일)
