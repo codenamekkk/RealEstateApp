@@ -61,7 +61,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     allDataCache.current = { transactions: null, rent: null };
     if (selectedProp?.lawdCd) {
       // 이미 검색된 매물이면 평수 목록 복원
-      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear);
+      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, selectedProp.umdNm);
       setSelectedArea(selectedProp.selectedArea || "전체");
     } else {
       setAreas([]);
@@ -69,9 +69,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }, [selectedPropId]);
 
-  async function loadAreas(aptNm, lawdCd, buildYear) {
+  async function loadAreas(aptNm, lawdCd, buildYear, umdNm) {
     try {
-      const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear);
+      const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear, umdNm);
       setAreas(areasData);
     } catch { setAreas([]); }
   }
@@ -91,9 +91,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }
 
-  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId) {
+  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId, umdNm) {
     try {
-      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear);
+      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear, umdNm);
       if (reqId && selectRequestId.current !== reqId) return;
       // area가 "전체"일 때 캐시 저장
       if (area === "전체") {
@@ -210,9 +210,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
       // 평수 목록 + 매매 + 전월세 + 단지정보 모두 병렬 조회
       const [areasResult] = await Promise.allSettled([
-        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear),
+        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, regionData.umdNm),
         loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear, regionData.guNm, reqId),
-        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId),
+        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, regionData.umdNm),
         loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId),
       ]);
       if (selectRequestId.current !== reqId) return;
@@ -270,7 +270,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         // 특정 평수: 서버에서 필터링된 데이터 조회 (캐시 덕분에 DB 쿼리만 수행, 외부 API 호출 없음)
         await Promise.allSettled([
           loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear, selectedProp.guNm),
-          loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear),
+          loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear, null, selectedProp.umdNm),
         ]);
       }
     } finally {
@@ -282,7 +282,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear, guNm, reqId) {
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
-      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear);
+      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear, umdNm);
       if (reqId && selectRequestId.current !== reqId) return;
 
       // area가 "전체"일 때 캐시 저장

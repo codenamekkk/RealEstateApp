@@ -505,6 +505,46 @@ async function ensureRentCached(lawdCd, dealYmd) {
   }
 }
 
+/**
+ * 엄격한 아파트 이름 매칭 쿼리 실행
+ *
+ * 1단계: 정확 일치 (cleanName === apt_nm)
+ * 2단계: starts-with 후보 중 가장 유사한 이름 하나만 선택하여 해당 이름으로 재조회
+ *        → 여러 아파트가 섞이는 것을 방지
+ *
+ * buildYear, umdNm 필터 항상 함께 적용
+ */
+function queryWithStrictMatch(db, tableName, cleanName, lawdCd, { buildYear, umdNm, area } = {}, orderBy = "") {
+  const buildFilters = () => {
+    let where = "";
+    const params = [];
+    if (buildYear) { where += " AND build_year = ?"; params.push(parseInt(buildYear)); }
+    if (umdNm) { where += " AND umd_nm = ?"; params.push(umdNm); }
+    if (area && area !== "전체") {
+      const areaNum = parseFloat(area);
+      where += " AND exclu_use_ar BETWEEN ? AND ?";
+      params.push(areaNum - 2, areaNum + 2);
+    }
+    return { where, params };
+  };
+
+  const { where: filterWhere, params: filterParams } = buildFilters();
+
+  // 1단계: 정확 일치
+  const exactQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${filterWhere}${orderBy}`;
+  const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...filterParams);
+  if (exactRows.length > 0) return exactRows;
+
+  // 2단계: starts-with 후보 중 가장 짧은 이름(= 가장 유사) 하나만 선택
+  const candidateQ = `SELECT DISTINCT apt_nm FROM ${tableName} WHERE lawd_cd = ? AND apt_nm LIKE ?${filterWhere} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
+  const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...filterParams);
+  if (!candidate) return [];
+
+  // 선택된 이름으로 정확 재조회 (다른 아파트 데이터 혼입 방지)
+  const matchQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${filterWhere}${orderBy}`;
+  return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...filterParams);
+}
+
 function getMonthRange(months) {
   const result = [];
   const now = new Date();
@@ -645,7 +685,7 @@ app.get("/api/region-code", (req, res) => {
 
 // ── 아파트 평수 목록 조회 ───────────────────────────────────────────
 app.get("/api/apartment/areas", async (req, res) => {
-  const { aptNm, lawdCd, buildYear } = req.query;
+  const { aptNm, lawdCd, buildYear, umdNm } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
@@ -654,22 +694,17 @@ app.get("/api/apartment/areas", async (req, res) => {
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    let areaQuery = `
-      SELECT DISTINCT exclu_use_ar FROM transaction_cache
-      WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')
-    `;
-    const areaParams = [lawdCd, cleanName, `${cleanName}%`, cleanName];
-    if (buildYear) {
-      areaQuery += ` AND build_year = ?`;
-      areaParams.push(parseInt(buildYear));
-    }
-    areaQuery += ` ORDER BY exclu_use_ar`;
-    const rows = db.prepare(areaQuery).all(...areaParams);
+    const rows = queryWithStrictMatch(db, "transaction_cache", cleanName, lawdCd, { buildYear, umdNm }, ` ORDER BY exclu_use_ar`);
 
-    const areas = rows.map(r => ({
-      area: r.exclu_use_ar,
-      areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
-    }));
+    // DISTINCT 처리
+    const seen = new Set();
+    const areas = [];
+    for (const r of rows) {
+      if (!seen.has(r.exclu_use_ar)) {
+        seen.add(r.exclu_use_ar);
+        areas.push({ area: r.exclu_use_ar, areaPyeong: Math.round(r.exclu_use_ar / 3.3058) });
+      }
+    }
     res.json(areas);
   } catch (e) {
     console.error("평수 조회 실패:", e.message);
@@ -679,7 +714,7 @@ app.get("/api/apartment/areas", async (req, res) => {
 
 // ── 실거래 조회 ─────────────────────────────────────────────────────
 app.get("/api/apartment/transactions", async (req, res) => {
-  const { aptNm, lawdCd, area, months: monthsStr, buildYear } = req.query;
+  const { aptNm, lawdCd, area, months: monthsStr, buildYear, umdNm } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
@@ -698,29 +733,42 @@ app.get("/api/apartment/transactions", async (req, res) => {
     }
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    let query = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
-    const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
 
-    if (buildYear) {
-      query += ` AND build_year = ?`;
-      params.push(parseInt(buildYear));
-    }
+    // 단계별 매칭: 정확 매칭 → starts-with 후보 중 가장 유사한 이름 하나로 재조회
+    const tryMatch = (extraWhere, extraParams, orderBy) => {
+      const baseFilters = [];
+      const baseFilterParams = [];
+
+      if (buildYear) { baseFilters.push("build_year = ?"); baseFilterParams.push(parseInt(buildYear)); }
+      if (umdNm) { baseFilters.push("umd_nm = ?"); baseFilterParams.push(umdNm); }
+
+      const filterStr = baseFilters.length > 0 ? " AND " + baseFilters.join(" AND ") : "";
+
+      // 1단계: 정확 일치
+      const exactQ = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?${filterStr}${extraWhere}${orderBy}`;
+      const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...baseFilterParams, ...extraParams);
+      if (exactRows.length > 0) return exactRows;
+
+      // 2단계: starts-with 후보 중 가장 짧은 이름 하나만 선택
+      const candidateQ = `SELECT DISTINCT apt_nm FROM transaction_cache WHERE lawd_cd = ? AND apt_nm LIKE ?${filterStr} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
+      const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...baseFilterParams);
+      if (!candidate) return [];
+
+      // 선택된 이름으로 정확 재조회
+      const matchQ = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?${filterStr}${extraWhere}${orderBy}`;
+      return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...baseFilterParams, ...extraParams);
+    };
 
     // 최근 데이터 조회 (month 필터 적용)
-    let recentQuery = query + ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
-    const recentParams = [...params, ...monthList];
+    const monthPlaceholders = ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
+    const areaFilter = (area && area !== "전체") ? ` AND exclu_use_ar BETWEEN ? AND ?` : "";
+    const areaParams = (area && area !== "전체") ? [parseFloat(area) - 2, parseFloat(area) + 2] : [];
 
-    if (area && area !== "전체") {
-      const areaNum = parseFloat(area);
-      query += ` AND exclu_use_ar BETWEEN ? AND ?`;
-      params.push(areaNum - 2, areaNum + 2);
-      recentQuery += ` AND exclu_use_ar BETWEEN ? AND ?`;
-      recentParams.push(areaNum - 2, areaNum + 2);
-    }
-    recentQuery += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
-    query += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
+    const recentExtra = monthPlaceholders + areaFilter;
+    const recentParams = [...monthList, ...areaParams];
+    const orderBy = ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
 
-    const rows = db.prepare(recentQuery).all(...recentParams);
+    const rows = tryMatch(recentExtra, recentParams, orderBy);
 
     // 동별 요약 생성
     const dongMap = {};
@@ -767,18 +815,10 @@ app.get("/api/apartment/transactions", async (req, res) => {
       buildYear: r.build_year,
     }));
 
-    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서)
-    let allTimeQuery = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
-    const allTimeParams = [lawdCd, cleanName, `${cleanName}%`, cleanName];
-    if (buildYear) {
-      allTimeQuery += ` AND build_year = ?`;
-      allTimeParams.push(parseInt(buildYear));
-    }
-    if (area && area !== "전체") {
-      const areaNum2 = parseFloat(area);
-      allTimeQuery += ` AND exclu_use_ar BETWEEN ? AND ?`;
-      allTimeParams.push(areaNum2 - 2, areaNum2 + 2);
-    }
+    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서, 동일한 단계별 매칭 적용)
+    const allTimeExtra = areaFilter;
+    const allTimeExtraParams = [...areaParams];
+
     const formatRow = (r) => r ? {
       price: r.deal_amount,
       date: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
@@ -786,8 +826,10 @@ app.get("/api/apartment/transactions", async (req, res) => {
       floor: r.floor,
       area: r.exclu_use_ar,
     } : null;
-    const allTimeHighest = db.prepare(allTimeQuery + ` ORDER BY deal_amount DESC LIMIT 1`).get(...allTimeParams);
-    const allTimeLowest = db.prepare(allTimeQuery + ` ORDER BY deal_amount ASC LIMIT 1`).get(...allTimeParams);
+
+    const allTimeRows = tryMatch(allTimeExtra, allTimeExtraParams, ` ORDER BY deal_amount DESC`);
+    const allTimeHighest = allTimeRows.length > 0 ? allTimeRows[0] : null;
+    const allTimeLowest = allTimeRows.length > 0 ? allTimeRows[allTimeRows.length - 1] : null;
 
     res.json({
       transactions,
@@ -805,7 +847,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
 
 // ── 전월세 실거래 조회 (캐시 기반) ──────────────────────────────────────
 app.get("/api/apartment/rent", async (req, res) => {
-  const { aptNm, lawdCd, area, months = 12, buildYear } = req.query;
+  const { aptNm, lawdCd, area, months = 12, buildYear, umdNm } = req.query;
   if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
@@ -815,23 +857,11 @@ app.get("/api/apartment/rent", async (req, res) => {
     // 캐시 확보 (동시성 제어 포함)
     await Promise.all(monthList.map(ym => ensureRentCached(lawdCd, ym)));
 
-    // DB에서 조회
+    // DB에서 조회 (단계별 매칭: 정확 → starts-with fallback)
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    let query = `SELECT * FROM rent_cache WHERE lawd_cd = ? AND (apt_nm = ? OR apt_nm LIKE ? OR ? LIKE '%' || apt_nm || '%')`;
-    const params = [lawdCd, cleanName, `${cleanName}%`, cleanName];
-
-    if (buildYear) {
-      query += ` AND build_year = ?`;
-      params.push(parseInt(buildYear));
-    }
-    if (area && area !== "전체") {
-      const areaNum = parseFloat(area);
-      query += ` AND exclu_use_ar BETWEEN ? AND ?`;
-      params.push(areaNum - 2, areaNum + 2);
-    }
-    query += ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
-
-    const rows = db.prepare(query).all(...params);
+    const rows = queryWithStrictMatch(db, "rent_cache", cleanName, lawdCd,
+      { buildYear, umdNm, area },
+      ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`);
 
     // 전세/월세 분리
     const jeonse = [];
