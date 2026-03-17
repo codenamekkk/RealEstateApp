@@ -178,13 +178,9 @@ export default function useAppState() {
         fetch(`${SERVER_URL}/api/shares/sharing/${userId}`),
         fetch(`${SERVER_URL}/api/shares/receiving/${userId}`),
       ]);
-      const incoming = await inRes.json();
-      const sharing = await sharingRes.json();
-      const receiving = await receivingRes.json();
-
-      setIncomingRequests(incoming);
-      setSharingList(sharing);
-      setReceivingList(receiving);
+      if (inRes.ok) setIncomingRequests(await inRes.json());
+      if (sharingRes.ok) setSharingList(await sharingRes.json());
+      if (receivingRes.ok) setReceivingList(await receivingRes.json());
     } catch (e) {
       console.log("공유 목록 조회 실패:", e.message);
     }
@@ -208,12 +204,12 @@ export default function useAppState() {
 
   async function respondShareRequest(requestId, status) {
     try {
-      await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
+      const res = await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       });
-      // Refresh lists
+      if (!res.ok) return;
       await fetchShareLists(myId);
     } catch (e) {
       console.log("공유 응답 실패:", e.message);
@@ -222,9 +218,10 @@ export default function useAppState() {
 
   async function removeShare(requestId) {
     try {
-      await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
+      const res = await fetch(`${SERVER_URL}/api/share-requests/${requestId}`, {
         method: "DELETE",
       });
+      if (!res.ok) return;
       await fetchShareLists(myId);
     } catch (e) {
       console.log("공유 삭제 실패:", e.message);
@@ -283,9 +280,15 @@ export default function useAppState() {
   }
 
   function removeProperty(id, currentSelectedId) {
-    const remaining = localProperties.filter(p => p.id !== id);
-    setLocalProperties(remaining);
-    return currentSelectedId === id && remaining.length > 0 ? remaining[0].id : currentSelectedId;
+    let nextId = currentSelectedId;
+    setLocalProperties(ps => {
+      const remaining = ps.filter(p => p.id !== id);
+      if (currentSelectedId === id && remaining.length > 0) {
+        nextId = remaining[0].id;
+      }
+      return remaining;
+    });
+    return nextId;
   }
 
   function updateProp(id, field, val) {

@@ -359,6 +359,10 @@ async function fetchMolitData(lawdCd, dealYmd) {
   const url = `http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
   console.log("[MOLIT] 요청:", url.replace(MOLIT_API_KEY, "***KEY***"));
   const res = await fetch(url, { timeout: 15000 });
+  if (!res.ok) {
+    console.warn(`[MOLIT] HTTP 에러: ${res.status} ${res.statusText}`);
+    return [];
+  }
   const xml = await res.text();
   console.log("[MOLIT] 응답 상태:", res.status, "길이:", xml.length, "앞부분:", xml.slice(0, 300));
   const json = xmlParser.parse(xml);
@@ -415,7 +419,10 @@ async function ensureCached(lawdCd, dealYmd) {
           parseInt(item.dealDay) || null
         );
       }
-      db.prepare("INSERT OR REPLACE INTO api_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+      // 데이터가 있거나 현재 월일 때만 로그 기록 (과거 월 빈 결과는 다음에 재시도)
+      if (items.length > 0 || isCurrentMonth) {
+        db.prepare("INSERT OR REPLACE INTO api_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+      }
     });
     tx();
   })();
@@ -449,6 +456,10 @@ async function ensureRentCached(lawdCd, dealYmd) {
   const promise = (async () => {
     const url = `https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999`;
     const r = await fetch(url, { timeout: 15000 });
+    if (!r.ok) {
+      console.warn(`[RENT] HTTP 에러: ${r.status} ${r.statusText}`);
+      return;
+    }
     const text = await r.text();
     const parsed = xmlParser.parse(text);
     const items = parsed?.response?.body?.items?.item;
@@ -478,7 +489,10 @@ async function ensureRentCached(lawdCd, dealYmd) {
           parseInt(item.dealDay) || null
         );
       }
-      db.prepare("INSERT OR REPLACE INTO rent_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+      // 데이터가 있거나 현재 월일 때만 로그 기록 (과거 월 빈 결과는 다음에 재시도)
+      if (list.length > 0 || isCurrentMonth) {
+        db.prepare("INSERT OR REPLACE INTO rent_fetch_log (lawd_cd, deal_ymd, fetched_at) VALUES (?, ?, ?)").run(lawdCd, dealYmd, now);
+      }
     });
     tx();
   })();
@@ -1001,17 +1015,22 @@ async function fetchBuildingApi(url, label, retries = 1) {
       console.log(`[BUILDING] ${label} 재시도 ${attempt}/${retries} (300ms 대기)`);
       await new Promise(r => setTimeout(r, 300));
     }
-    const res = await fetch(url, { timeout: 15000 });
-    const data = await res.json();
-    const resultCode = data?.response?.header?.resultCode;
-    const resultMsg = data?.response?.header?.resultMsg || "";
-    if (resultCode && resultCode !== "00") {
-      console.warn(`[BUILDING] ${label} API 에러: code=${resultCode}, msg=${resultMsg}`);
-      if (attempt < retries) continue; // 재시도
-      return { items: null, error: resultMsg };
+    try {
+      const res = await fetch(url, { timeout: 15000 });
+      const data = await res.json();
+      const resultCode = data?.response?.header?.resultCode;
+      const resultMsg = data?.response?.header?.resultMsg || "";
+      if (resultCode && resultCode !== "00") {
+        console.warn(`[BUILDING] ${label} API 에러: code=${resultCode}, msg=${resultMsg}`);
+        if (attempt < retries) continue; // 재시도
+        return { items: null, error: resultMsg };
+      }
+      const items = data?.response?.body?.items?.item;
+      return { items: items || null, error: null };
+    } catch (e) {
+      console.warn(`[BUILDING] ${label} attempt ${attempt} 실패:`, e.message);
+      if (attempt >= retries) return { items: null, error: e.message };
     }
-    const items = data?.response?.body?.items?.item;
-    return { items: items || null, error: null };
   }
   return { items: null, error: "max retries exceeded" };
 }
