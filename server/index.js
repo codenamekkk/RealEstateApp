@@ -734,8 +734,10 @@ app.get("/api/apartment/transactions", async (req, res) => {
       ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, maxMonths)
       : maxMonths;
     const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
-    if (allTimeMonths.length > 0) {
-      await Promise.allSettled(allTimeMonths.map(ym => ensureCached(lawdCd, ym)));
+    // 메모리 폭증 방지: 30개씩 나눠서 순차 호출
+    for (let i = 0; i < allTimeMonths.length; i += 30) {
+      const batch = allTimeMonths.slice(i, i + 30);
+      await Promise.allSettled(batch.map(ym => ensureCached(lawdCd, ym)));
     }
 
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
