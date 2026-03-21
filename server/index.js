@@ -1221,37 +1221,34 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     // KB 단지 정보 + 타입 정보 조회 (캐시)
     const { main, types, brif } = await getKBComplexCached(serial);
 
-    // 면적 타입 생성: Math.floor(공급면적) 기준 그룹핑
-    const typeMap = {};
+    // 면적 타입 생성: KB typInfo 기반, 같은 floor+타입은 하나로
+    const typeList = [];
+    const seenKey = new Set();
     for (const t of (types || [])) {
       const supplyRaw = parseFloat(t["공급면적"]);
       const exclRaw = parseFloat(t["전용면적"]);
       if (!supplyRaw || !exclRaw) continue;
 
       const supplyFloor = Math.floor(supplyRaw);
-      if (!typeMap[supplyFloor]) {
-        typeMap[supplyFloor] = {
-          exclusiveAreas: new Set(),
-          supplyArea: supplyFloor,
-          households: 0,
-        };
-      }
-      typeMap[supplyFloor].exclusiveAreas.add(exclRaw);
-      typeMap[supplyFloor].households += parseInt(t["세대수"]) || 0;
+      const typeName = (t["주택형타입내용"] || "").trim();
+      const key = `${supplyFloor}_${typeName}`;
+      if (seenKey.has(key)) continue;
+      seenKey.add(key);
+
+      typeList.push({
+        area: exclRaw,
+        areaPyeong: Math.floor(exclRaw / 3.3058),
+        supplyArea: supplyFloor,
+        supplyPyeong: Math.floor(supplyFloor / 3.3058),
+        typeName: typeName || null,
+        groupedExclusiveAreas: [exclRaw],
+        households: parseInt(t["세대수"]) || 0,
+      });
     }
 
-    const exclusiveAreas = Object.entries(typeMap)
-      .sort(([a], [b]) => Number(a) - Number(b))
-      .map(([supplyStr, g]) => {
-        const exclArr = [...g.exclusiveAreas].sort((a, b) => a - b);
-        return {
-          area: exclArr[0],
-          areaPyeong: Math.floor(exclArr[0] / 3.3058),
-          supplyArea: Number(supplyStr),
-          supplyPyeong: Math.floor(Number(supplyStr) / 3.3058),
-          groupedExclusiveAreas: exclArr,
-        };
-      });
+    // KB에서 타입명을 제공하면 그대로 유지 (A, B, C 등)
+
+    const exclusiveAreas = typeList.sort((a, b) => a.supplyArea - b.supplyArea || (a.typeName || "").localeCompare(b.typeName || ""));
 
     // 응답 구성 (기존 호환)
     const totalHhld = parseInt(main?.["총세대수"]) || 0;
@@ -1266,17 +1263,17 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       totalHouseholds: totalHhld,
       totalParking: totalPkng,
       parkingPerUnit: totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0,
-      bcRat: 0,
-      vlRat: 0,
+      bcRat: parseFloat(main?.["건폐율내용"]) || 0,
+      vlRat: parseFloat(main?.["용적률내용"]) || 0,
       useAprDate: main?.["준공년월일"] ? main["준공년월일"].replace(/(\d{4})(\d{2})(\d{2})/, "$1.$2.$3") : null,
-      totArea: 0,
+      totArea: parseFloat(main?.["연면적내용"]) || 0,
       exclusiveAreas,
-      heatType: null,
-      constructor: null,
-      developer: null,
-      manageTel: null,
+      heatType: [main?.["난방방식구분명"], main?.["난방연료구분명"]].filter(Boolean).join(", ") || null,
+      constructor: main?.["시공사명"]?.trim() || null,
+      developer: main?.["시행업체명"]?.trim() || null,
+      manageTel: main?.["관리사무소전화번호내용"]?.trim() || null,
       manageType: null,
-      hallType: null,
+      hallType: main?.["현관구조"]?.trim() || null,
       doroJuso: main?.["도로기본주소"] ? `${main["도로기본주소"]} ${main["도로명건물본번"] || ""}`.trim() : null,
     };
 

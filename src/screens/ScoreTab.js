@@ -242,67 +242,47 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     return ci?.supplyPyeong || Math.floor(exclusiveArea / 3.3058);
   }
 
-  // 실거래 면적(1차) + complexInfo 공급면적 매핑(보조) 병합
+  // complexInfo 기반 평수 선택 목록 생성 (같은 전용면적은 하나로 묶기)
   function getMergedAreas() {
     const complexAreas = selectedProp.complexInfo?.exclusiveAreas || [];
-    if (areas.length === 0 && complexAreas.length === 0) return [];
+    if (complexAreas.length === 0 && areas.length === 0) return [];
 
-    // 1차: 실거래 면적을 기반으로 그룹 생성
-    const groups = [];
+    // complexInfo 기반: 같은 supplyArea의 전용면적을 합치기
+    const supplyMap = {};
+    for (const ca of complexAreas) {
+      const key = ca.supplyArea;
+      if (!supplyMap[key]) {
+        supplyMap[key] = {
+          area: ca.area,
+          areaPyeong: ca.areaPyeong,
+          supplyArea: ca.supplyArea,
+          supplyPyeong: ca.supplyPyeong,
+          groupedExclusiveAreas: [],
+        };
+      }
+      // 전용면적 추가 (중복 방지)
+      const exclAreas = ca.groupedExclusiveAreas || [ca.area];
+      for (const ea of exclAreas) {
+        if (!supplyMap[key].groupedExclusiveAreas.some(ga => Math.abs(ga - ea) < 0.01)) {
+          supplyMap[key].groupedExclusiveAreas.push(ea);
+        }
+      }
+    }
+
+    const groups = Object.values(supplyMap);
+
+    // 실거래에만 있고 complexInfo에 없는 면적 추가 (fallback)
     for (const txArea of areas) {
-      // 기존 그룹에 ±1㎡ 이내면 편입
-      const existingGroup = groups.find(g =>
+      const matched = groups.some(g =>
         g.groupedExclusiveAreas.some(ea => Math.abs(ea - txArea.area) <= 1)
       );
-      if (existingGroup) {
-        if (!existingGroup.groupedExclusiveAreas.some(ea => Math.abs(ea - txArea.area) < 0.01)) {
-          existingGroup.groupedExclusiveAreas.push(txArea.area);
-        }
-      } else {
+      if (!matched) {
         groups.push({
           area: txArea.area,
           areaPyeong: txArea.areaPyeong || Math.floor(txArea.area / 3.3058),
           supplyArea: null,
           supplyPyeong: null,
           groupedExclusiveAreas: [txArea.area],
-        });
-      }
-    }
-
-    // 2차: complexInfo에서 공급면적 매핑
-    for (const group of groups) {
-      const match = complexAreas.find(ca =>
-        ca.groupedExclusiveAreas
-          ? ca.groupedExclusiveAreas.some(ea => group.groupedExclusiveAreas.some(ga => Math.abs(ea - ga) <= 1))
-          : group.groupedExclusiveAreas.some(ga => Math.abs(ca.area - ga) <= 1)
-      );
-      if (match) {
-        group.supplyArea = match.supplyArea;
-        group.supplyPyeong = match.supplyPyeong;
-        // complexInfo의 그룹 면적도 편입
-        const ciAreas = match.groupedExclusiveAreas || [match.area];
-        for (const ea of ciAreas) {
-          if (!group.groupedExclusiveAreas.some(ga => Math.abs(ga - ea) < 0.01)) {
-            group.groupedExclusiveAreas.push(ea);
-          }
-        }
-      }
-    }
-
-    // 3차: complexInfo에만 있고 실거래에 없는 면적도 추가
-    for (const ca of complexAreas) {
-      const alreadyMapped = groups.some(g =>
-        g.groupedExclusiveAreas.some(ga =>
-          (ca.groupedExclusiveAreas || [ca.area]).some(ea => Math.abs(ea - ga) <= 1)
-        )
-      );
-      if (!alreadyMapped) {
-        groups.push({
-          area: ca.area,
-          areaPyeong: ca.areaPyeong,
-          supplyArea: ca.supplyArea,
-          supplyPyeong: ca.supplyPyeong,
-          groupedExclusiveAreas: [...(ca.groupedExclusiveAreas || [ca.area])],
         });
       }
     }
@@ -626,14 +606,14 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   </View>
                 )}
               </View>
-              {getMergedAreas().length > 0 && (
+              {(selectedProp.complexInfo?.exclusiveAreas || []).length > 0 && (
                 <View style={styles.complexAreasSection}>
                   <Text style={styles.complexAreasTitle}>면적 종류</Text>
                   <View style={styles.complexAreasRow}>
-                    {getMergedAreas().map((a, i) => (
+                    {(selectedProp.complexInfo?.exclusiveAreas || []).map((a, i) => (
                       <View key={i} style={styles.complexAreaPill}>
                         <Text style={styles.complexAreaText}>
-                          {a.supplyArea ? `${a.supplyArea}㎡(${a.supplyPyeong}평)` : `${a.area}㎡(${a.areaPyeong}평)`}
+                          {a.supplyArea}{a.typeName || ""}㎡
                         </Text>
                       </View>
                     ))}
