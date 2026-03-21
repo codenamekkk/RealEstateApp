@@ -4,7 +4,7 @@ import {
   View, Text, ScrollView, TouchableOpacity,
   TextInput, StyleSheet, ActivityIndicator, FlatList,
 } from "react-native";
-import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice, sqmToPyeong } from "../constants";
+import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice } from "../constants";
 import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRentTransactions, getRegionalAnalysis, getComplexInfo } from "../services/apartmentApi";
 
 function ScoreButton({ value, selected, onPress, color }) {
@@ -48,6 +48,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [dataCollecting, setDataCollecting] = useState(false);
   const [complexInfoLoading, setComplexInfoLoading] = useState(false);
   const [txTab, setTxTab] = useState("매매"); // 매매/전세/월세
+  const [txExpanded, setTxExpanded] = useState(false);
   const [priceRangeTab, setPriceRangeTab] = useState("최근 1년"); // 최근 1년/전체기간
   const [areaLoading, setAreaLoading] = useState(false);
 
@@ -58,6 +59,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   useEffect(() => {
     setShowDropdown(false);
     setSearchResults([]);
+    setTxExpanded(false);
     allDataCache.current = { transactions: null, rent: null };
     if (selectedProp?.lawdCd) {
       // 이미 검색된 매물이면 평수 목록 복원
@@ -76,13 +78,12 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     } catch { setAreas([]); }
   }
 
-  async function loadComplexInfo(lawdCd, address, aptName, bjdongCd, reqId, kaptCode) {
+  async function loadComplexInfo(lawdCd, address, aptName, bjdongCd, reqId) {
     setComplexInfoLoading(true);
     try {
-      const info = await getComplexInfo(lawdCd, address, aptName, bjdongCd, kaptCode);
+      const info = await getComplexInfo(lawdCd, address, aptName, bjdongCd);
       if (reqId && selectRequestId.current !== reqId) return;
       updateProp(selectedProp.id, "complexInfo", info);
-      if (info?.kaptCode) updateProp(selectedProp.id, "kaptCode", info.kaptCode);
     } catch (e) {
       console.warn("단지 정보 조회 실패:", e.message);
       if (reqId && selectRequestId.current !== reqId) return;
@@ -148,8 +149,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "pricePercentile", null);
       updateProp(selectedProp.id, "dongPercentile", null);
       updateProp(selectedProp.id, "complexInfo", null);
-      updateProp(selectedProp.id, "kaptCode", null);
-      updateProp(selectedProp.id, "jeonseData", null);
+            updateProp(selectedProp.id, "jeonseData", null);
       updateProp(selectedProp.id, "wolseData", null);
       return;
     }
@@ -194,8 +194,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     updateProp(selectedProp.id, "dongPercentile", null);
     updateProp(selectedProp.id, "neighborComparison", []);
     updateProp(selectedProp.id, "complexInfo", null);
-    updateProp(selectedProp.id, "kaptCode", null);
-    updateProp(selectedProp.id, "jeonseData", null);
+        updateProp(selectedProp.id, "jeonseData", null);
     updateProp(selectedProp.id, "wolseData", null);
     allDataCache.current = { transactions: null, rent: null };
 
@@ -216,7 +215,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, regionData.umdNm),
         loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear, regionData.guNm, reqId),
         loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, regionData.umdNm),
-        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId, null),
+        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId),
       ]);
       if (selectRequestId.current !== reqId) return;
 
@@ -236,20 +235,97 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   // 전용면적 → 공급면적 기준 평수 변환
   function getSupplyPyeong(exclusiveArea) {
     const ci = selectedProp.complexInfo?.exclusiveAreas?.find(
-      e => Math.abs(e.area - exclusiveArea) < 2
+      e => e.groupedExclusiveAreas
+        ? e.groupedExclusiveAreas.some(ea => Math.abs(ea - exclusiveArea) < 1)
+        : Math.abs(e.area - exclusiveArea) < 2
     );
-    return ci?.supplyPyeong || Math.round(exclusiveArea / 3.3058);
+    return ci?.supplyPyeong || Math.floor(exclusiveArea / 3.3058);
+  }
+
+  // 실거래 면적(1차) + complexInfo 공급면적 매핑(보조) 병합
+  function getMergedAreas() {
+    const complexAreas = selectedProp.complexInfo?.exclusiveAreas || [];
+    if (areas.length === 0 && complexAreas.length === 0) return [];
+
+    // 1차: 실거래 면적을 기반으로 그룹 생성
+    const groups = [];
+    for (const txArea of areas) {
+      // 기존 그룹에 ±1㎡ 이내면 편입
+      const existingGroup = groups.find(g =>
+        g.groupedExclusiveAreas.some(ea => Math.abs(ea - txArea.area) <= 1)
+      );
+      if (existingGroup) {
+        if (!existingGroup.groupedExclusiveAreas.some(ea => Math.abs(ea - txArea.area) < 0.01)) {
+          existingGroup.groupedExclusiveAreas.push(txArea.area);
+        }
+      } else {
+        groups.push({
+          area: txArea.area,
+          areaPyeong: txArea.areaPyeong || Math.floor(txArea.area / 3.3058),
+          supplyArea: null,
+          supplyPyeong: null,
+          groupedExclusiveAreas: [txArea.area],
+        });
+      }
+    }
+
+    // 2차: complexInfo에서 공급면적 매핑
+    for (const group of groups) {
+      const match = complexAreas.find(ca =>
+        ca.groupedExclusiveAreas
+          ? ca.groupedExclusiveAreas.some(ea => group.groupedExclusiveAreas.some(ga => Math.abs(ea - ga) <= 1))
+          : group.groupedExclusiveAreas.some(ga => Math.abs(ca.area - ga) <= 1)
+      );
+      if (match) {
+        group.supplyArea = match.supplyArea;
+        group.supplyPyeong = match.supplyPyeong;
+        // complexInfo의 그룹 면적도 편입
+        const ciAreas = match.groupedExclusiveAreas || [match.area];
+        for (const ea of ciAreas) {
+          if (!group.groupedExclusiveAreas.some(ga => Math.abs(ga - ea) < 0.01)) {
+            group.groupedExclusiveAreas.push(ea);
+          }
+        }
+      }
+    }
+
+    // 3차: complexInfo에만 있고 실거래에 없는 면적도 추가
+    for (const ca of complexAreas) {
+      const alreadyMapped = groups.some(g =>
+        g.groupedExclusiveAreas.some(ga =>
+          (ca.groupedExclusiveAreas || [ca.area]).some(ea => Math.abs(ea - ga) <= 1)
+        )
+      );
+      if (!alreadyMapped) {
+        groups.push({
+          area: ca.area,
+          areaPyeong: ca.areaPyeong,
+          supplyArea: ca.supplyArea,
+          supplyPyeong: ca.supplyPyeong,
+          groupedExclusiveAreas: [...(ca.groupedExclusiveAreas || [ca.area])],
+        });
+      }
+    }
+
+    return groups.sort((a, b) => (a.supplyArea || a.area) - (b.supplyArea || b.area));
   }
 
   // 평수 선택 (캐시된 전체 데이터에서 클라이언트 필터링, 없으면 서버 호출)
-  async function handleAreaSelect(area) {
-    setSelectedArea(String(area));
-    updateProp(selectedProp.id, "selectedArea", area);
+  async function handleAreaSelect(areaGroup) {
+    // areaGroup: mergedAreas의 항목 객체 또는 "전체" 문자열
+    const isAll = areaGroup === "전체";
+    const areaKey = isAll ? "전체" : String(areaGroup.supplyArea || areaGroup.area);
+    const areaParam = isAll ? "전체" : (areaGroup.groupedExclusiveAreas?.join(",") || String(areaGroup.area));
+
+    setSelectedArea(areaKey);
+    setTxExpanded(false);
+    updateProp(selectedProp.id, "selectedArea", areaKey);
+    updateProp(selectedProp.id, "selectedAreaGroup", isAll ? null : areaGroup);
     if (!selectedProp.lawdCd) return;
 
     setAreaLoading(true);
     try {
-      if (area === "전체") {
+      if (isAll) {
         // "전체"는 캐시에서 바로 복원
         const cachedTx = allDataCache.current.transactions;
         const cachedRent = allDataCache.current.rent;
@@ -270,10 +346,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           updateProp(selectedProp.id, "wolseData", cachedRent.wolse || { transactions: [], dongSummary: [] });
         }
       } else {
-        // 특정 평수: 서버에서 필터링된 데이터 조회 (캐시 덕분에 DB 쿼리만 수행, 외부 API 호출 없음)
+        // 특정 평수: 그룹의 모든 전용면적을 콤마 구분으로 서버에 전달
         await Promise.allSettled([
-          loadTransactionData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.umdNm, selectedProp.buildYear, selectedProp.guNm),
-          loadRentData(selectedProp.name, selectedProp.lawdCd, area, selectedProp.buildYear, null, selectedProp.umdNm),
+          loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.umdNm, selectedProp.buildYear, selectedProp.guNm),
+          loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, null, selectedProp.umdNm),
         ]);
       }
     } finally {
@@ -390,7 +466,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               <View style={styles.dropdown}>
                 <FlatList
                   data={searchResults}
-                  keyExtractor={(item, i) => `${item.complexId || item.aptName}_${i}`}
+                  keyExtractor={(item, i) => `${item.aptName}_${i}`}
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled={true}
                   style={{ maxHeight: 250 }}
@@ -550,14 +626,14 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   </View>
                 )}
               </View>
-              {selectedProp.complexInfo.exclusiveAreas && selectedProp.complexInfo.exclusiveAreas.length > 0 && (
+              {getMergedAreas().length > 0 && (
                 <View style={styles.complexAreasSection}>
-                  <Text style={styles.complexAreasTitle}>면적 종류 (공급/전용)</Text>
+                  <Text style={styles.complexAreasTitle}>면적 종류</Text>
                   <View style={styles.complexAreasRow}>
-                    {selectedProp.complexInfo.exclusiveAreas.map((a, i) => (
+                    {getMergedAreas().map((a, i) => (
                       <View key={i} style={styles.complexAreaPill}>
                         <Text style={styles.complexAreaText}>
-                          {a.supplyArea ? `${a.supplyArea}/${a.area}㎡(${a.supplyPyeong}평)` : `${a.area}㎡(${a.areaPyeong}평)`}
+                          {a.supplyArea ? `${a.supplyArea}㎡(${a.supplyPyeong}평)` : `${a.area}㎡(${a.areaPyeong}평)`}
                         </Text>
                       </View>
                     ))}
@@ -568,7 +644,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           ) : null}
 
           {/* 평수 선택 */}
-          {!dataCollecting && selectedProp.lawdCd && areas.length > 0 && (
+          {!dataCollecting && selectedProp.lawdCd && getMergedAreas().length > 0 && (
             <View style={styles.areaSection}>
               <Text style={styles.sectionTitle}>📐 평수 선택</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -578,20 +654,18 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 >
                   <Text style={[styles.areaPillText, selectedArea === "전체" && styles.areaPillTextActive]}>전체</Text>
                 </TouchableOpacity>
-                {areas.map(a => {
-                  const ci = selectedProp.complexInfo?.exclusiveAreas?.find(
-                    e => Math.abs(e.area - a.area) < 1
-                  );
-                  const label = ci?.supplyArea
-                    ? `${ci.supplyArea}/${a.area}㎡(${ci.supplyPyeong}평)`
-                    : `${a.area}㎡(${a.areaPyeong}평)`;
+                {getMergedAreas().map(mg => {
+                  const key = String(mg.supplyArea || mg.area);
+                  const label = mg.supplyArea
+                    ? `${mg.supplyArea}㎡(${mg.supplyPyeong}평)`
+                    : `${mg.area}㎡(${mg.areaPyeong}평)`;
                   return (
                     <TouchableOpacity
-                      key={a.area}
-                      onPress={() => handleAreaSelect(a.area)}
-                      style={[styles.areaPill, selectedArea === String(a.area) && styles.areaPillActive]}
+                      key={key}
+                      onPress={() => handleAreaSelect(mg)}
+                      style={[styles.areaPill, selectedArea === key && styles.areaPillActive]}
                     >
-                      <Text style={[styles.areaPillText, selectedArea === String(a.area) && styles.areaPillTextActive]}>
+                      <Text style={[styles.areaPillText, selectedArea === key && styles.areaPillTextActive]}>
                         {label}
                       </Text>
                     </TouchableOpacity>
@@ -615,7 +689,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           )}
 
           {/* 실거래 정보 테이블 (매매/전세/월세 탭) */}
-          {(dataCollecting || areaLoading) ? null : (selectedProp.dongSummary?.length > 0 || selectedProp.jeonseData?.dongSummary?.length > 0 || selectedProp.wolseData?.dongSummary?.length > 0) ? (
+          {(dataCollecting || areaLoading) ? null : (selectedProp.transactionHistory?.length > 0 || selectedProp.dongSummary?.length > 0 || selectedProp.jeonseData?.transactions?.length > 0 || selectedProp.jeonseData?.dongSummary?.length > 0 || selectedProp.wolseData?.transactions?.length > 0 || selectedProp.wolseData?.dongSummary?.length > 0 || (selectedArea && selectedArea !== "전체")) ? (
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>📋 동별 실거래 정보</Text>
               {/* 매매/전세/월세 탭 */}
@@ -623,7 +697,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 {["매매", "전세", "월세"].map(tab => (
                   <TouchableOpacity
                     key={tab}
-                    onPress={() => setTxTab(tab)}
+                    onPress={() => { setTxTab(tab); setTxExpanded(false); }}
                     style={[styles.txTabBtn, txTab === tab && styles.txTabBtnActive]}
                   >
                     <Text style={[styles.txTabText, txTab === tab && styles.txTabTextActive]}>{tab}</Text>
@@ -632,85 +706,121 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               </View>
 
               {/* 매매 탭 */}
-              {txTab === "매매" && selectedProp.dongSummary?.length > 0 && (
-                <View style={styles.txTable}>
-                  <View style={styles.txRow}>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
-                    {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>평수</Text>}
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>거래가</Text>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>거래일</Text>
-                  </View>
-                  {selectedProp.dongSummary.map((d, i) => (
-                    <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
-                      {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{getSupplyPyeong(d.area)}평</Text>
-                      )}
-                      <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
-                        {formatPrice(d.recentPrice)}
-                      </Text>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.5 }]}>{d.recentDate}</Text>
+              {txTab === "매매" && (() => {
+                const txData = selectedProp.transactionHistory || [];
+                const displayData = txExpanded ? txData : txData.slice(0, 10);
+                return txData.length > 0 ? (
+                  <View style={styles.txTable}>
+                    <View style={styles.txRow}>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1 }]}>동</Text>
+                      {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 0.8 }]}>평수</Text>}
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.3 }]}>거래가</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 0.6 }]}>층</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.3 }]}>거래일</Text>
                     </View>
-                  ))}
-                </View>
-              )}
-              {txTab === "매매" && (!selectedProp.dongSummary || selectedProp.dongSummary.length === 0) && (
-                <Text style={styles.noDataText}>매매 거래 내역이 없습니다</Text>
-              )}
+                    {displayData.map((t, i) => (
+                      <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1 }]}>{t.aptDong || "미확인"}</Text>
+                        {selectedArea === "전체" && (
+                          <Text style={[styles.txCell, styles.txData, { flex: 0.8 }]}>{getSupplyPyeong(t.excluUseAr)}평</Text>
+                        )}
+                        <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.3 }]}>
+                          {formatPrice(t.dealAmount)}
+                        </Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 0.6 }]}>{t.floor || "-"}</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.3 }]}>{t.dealDate}</Text>
+                      </View>
+                    ))}
+                    {txData.length > 10 && (
+                      <TouchableOpacity onPress={() => setTxExpanded(!txExpanded)} style={styles.expandBtn}>
+                        <Text style={styles.expandBtnText}>
+                          {txExpanded ? "접기" : `더보기 (${txData.length - 10}건)`}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ) : (
+                  <Text style={styles.noDataText}>매매 거래 내역이 없습니다</Text>
+                );
+              })()}
 
               {/* 전세 탭 */}
-              {txTab === "전세" && selectedProp.jeonseData?.dongSummary?.length > 0 && (
-                <View style={styles.txTable}>
-                  <View style={styles.txRow}>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
-                    {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>평수</Text>}
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>보증금</Text>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>거래일</Text>
-                  </View>
-                  {selectedProp.jeonseData.dongSummary.map((d, i) => (
-                    <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
-                      {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{getSupplyPyeong(d.area)}평</Text>
-                      )}
-                      <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
-                        {formatPrice(d.recentDeposit)}
-                      </Text>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.5 }]}>{d.recentDate}</Text>
+              {txTab === "전세" && (() => {
+                const txData = selectedProp.jeonseData?.transactions || [];
+                const displayData = txExpanded ? txData : txData.slice(0, 10);
+                return txData.length > 0 ? (
+                  <View style={styles.txTable}>
+                    <View style={styles.txRow}>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
+                      {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 0.8 }]}>평수</Text>}
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>보증금</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 0.6 }]}>층</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.3 }]}>거래일</Text>
                     </View>
-                  ))}
-                </View>
-              )}
-              {txTab === "전세" && (!selectedProp.jeonseData?.dongSummary || selectedProp.jeonseData.dongSummary.length === 0) && (
-                <Text style={styles.noDataText}>전세 거래 내역이 없습니다</Text>
-              )}
+                    {displayData.map((t, i) => (
+                      <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{t.umdNm || "미확인"}</Text>
+                        {selectedArea === "전체" && (
+                          <Text style={[styles.txCell, styles.txData, { flex: 0.8 }]}>{getSupplyPyeong(t.excluUseAr)}평</Text>
+                        )}
+                        <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]}>
+                          {formatPrice(t.deposit)}
+                        </Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 0.6 }]}>{t.floor || "-"}</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.3 }]}>{t.dealDate}</Text>
+                      </View>
+                    ))}
+                    {txData.length > 10 && (
+                      <TouchableOpacity onPress={() => setTxExpanded(!txExpanded)} style={styles.expandBtn}>
+                        <Text style={styles.expandBtnText}>
+                          {txExpanded ? "접기" : `더보기 (${txData.length - 10}건)`}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ) : (
+                  <Text style={styles.noDataText}>전세 거래 내역이 없습니다</Text>
+                );
+              })()}
 
               {/* 월세 탭 */}
-              {txTab === "월세" && selectedProp.wolseData?.dongSummary?.length > 0 && (
-                <View style={styles.txTable}>
-                  <View style={styles.txRow}>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
-                    {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 1 }]}>평수</Text>}
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>보증금/월세</Text>
-                    <Text style={[styles.txCell, styles.txHeader, { flex: 1.3 }]}>거래일</Text>
-                  </View>
-                  {selectedProp.wolseData.dongSummary.map((d, i) => (
-                    <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{d.dong}</Text>
-                      {selectedArea === "전체" && (
-                        <Text style={[styles.txCell, styles.txData, { flex: 1 }]}>{getSupplyPyeong(d.area)}평</Text>
-                      )}
-                      <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]} numberOfLines={1}>
-                        {formatPrice(d.recentDeposit)}/{d.recentMonthly}만
-                      </Text>
-                      <Text style={[styles.txCell, styles.txData, { flex: 1.3 }]}>{d.recentDate}</Text>
+              {txTab === "월세" && (() => {
+                const txData = selectedProp.wolseData?.transactions || [];
+                const displayData = txExpanded ? txData : txData.slice(0, 10);
+                return txData.length > 0 ? (
+                  <View style={styles.txTable}>
+                    <View style={styles.txRow}>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.2 }]}>동</Text>
+                      {selectedArea === "전체" && <Text style={[styles.txCell, styles.txHeader, { flex: 0.8 }]}>평수</Text>}
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.5 }]}>보증금/월세</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 0.6 }]}>층</Text>
+                      <Text style={[styles.txCell, styles.txHeader, { flex: 1.1 }]}>거래일</Text>
                     </View>
-                  ))}
-                </View>
-              )}
-              {txTab === "월세" && (!selectedProp.wolseData?.dongSummary || selectedProp.wolseData.dongSummary.length === 0) && (
-                <Text style={styles.noDataText}>월세 거래 내역이 없습니다</Text>
-              )}
+                    {displayData.map((t, i) => (
+                      <View key={i} style={[styles.txRow, i % 2 === 0 && styles.txRowAlt]}>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.2 }]}>{t.umdNm || "미확인"}</Text>
+                        {selectedArea === "전체" && (
+                          <Text style={[styles.txCell, styles.txData, { flex: 0.8 }]}>{getSupplyPyeong(t.excluUseAr)}평</Text>
+                        )}
+                        <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]} numberOfLines={1}>
+                          {formatPrice(t.deposit)}/{t.monthlyRent}만
+                        </Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 0.6 }]}>{t.floor || "-"}</Text>
+                        <Text style={[styles.txCell, styles.txData, { flex: 1.1 }]}>{t.dealDate}</Text>
+                      </View>
+                    ))}
+                    {txData.length > 10 && (
+                      <TouchableOpacity onPress={() => setTxExpanded(!txExpanded)} style={styles.expandBtn}>
+                        <Text style={styles.expandBtnText}>
+                          {txExpanded ? "접기" : `더보기 (${txData.length - 10}건)`}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ) : (
+                  <Text style={styles.noDataText}>월세 거래 내역이 없습니다</Text>
+                );
+              })()}
             </View>
           ) : null}
 
@@ -979,6 +1089,8 @@ const styles = StyleSheet.create({
   txData:    { color: COLORS.text, fontSize: 11 },
   txPrice:   { color: "#22c55e", fontWeight: "600" },
   txHighest: { color: "#f59e0b", fontWeight: "600" },
+  expandBtn: { paddingVertical: 10, alignItems: "center", borderTopWidth: 1, borderTopColor: COLORS.border },
+  expandBtnText: { color: "#818cf8", fontSize: 13, fontWeight: "700" },
   txTabRow:      { flexDirection: "row", marginBottom: 12, gap: 6 },
   txTabBtn:      { flex: 1, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5, borderColor: "rgba(255,255,255,0.1)", alignItems: "center" },
   txTabBtnActive:{ borderColor: COLORS.primary, backgroundColor: COLORS.primarySoft },

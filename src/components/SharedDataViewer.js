@@ -62,7 +62,10 @@ export default function SharedDataViewer({ targetId, targetNickname, fetchShared
     if (diff !== 0) return diff;
     const priceA = Number(a.price) || Infinity;
     const priceB = Number(b.price) || Infinity;
-    return priceA - priceB;
+    if (priceA !== priceB) return priceA - priceB;
+    const highA = a.highestPrice || 0;
+    const highB = b.highestPrice || 0;
+    return highB - highA;
   });
 
   return (

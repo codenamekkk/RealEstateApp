@@ -46,10 +46,9 @@ export async function getRentTransactions(aptNm, lawdCd, area = "전체", months
   return res.json();
 }
 
-export async function getComplexInfo(lawdCd, address, aptName, bjdongCd, kaptCode) {
+export async function getComplexInfo(lawdCd, address, aptName, bjdongCd) {
   let url = `${SERVER_URL}/api/apartment/complex-info?lawdCd=${lawdCd}&address=${encodeURIComponent(address)}&aptName=${encodeURIComponent(aptName || "")}`;
   if (bjdongCd) url += `&bjdongCd=${bjdongCd}`;
-  if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
   const res = await fetch(url);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

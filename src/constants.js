@@ -61,7 +61,7 @@ export function getGrade(percent) {
 }
 
 export function sqmToPyeong(sqm) {
-  return Math.round(parseFloat(sqm) / 3.3058);
+  return Math.floor(parseFloat(sqm) / 3.3058);
 }
 
 export function formatPrice(manwon) {

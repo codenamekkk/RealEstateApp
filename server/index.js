@@ -109,6 +109,17 @@ db.exec(`
   )
 `);
 
+// ── KB부동산 캐시 테이블 ──────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS kb_complex_cache (
+    cache_key    TEXT PRIMARY KEY,
+    complex_data TEXT,
+    type_data    TEXT,
+    brif_data    TEXT,
+    fetched_at   INTEGER DEFAULT (unixepoch())
+  )
+`);
+
 // ── 좌표 캐시 테이블 ──────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS coord_cache (
@@ -138,30 +149,15 @@ if (regionCount.cnt === 0) {
   }
 }
 
-// ── 법정동코드 (동 레벨) 테이블 ────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS dong_codes (
-    sigungu_cd  TEXT NOT NULL,
-    bjdong_cd   TEXT NOT NULL,
-    dong_nm     TEXT NOT NULL,
-    PRIMARY KEY(sigungu_cd, bjdong_cd)
-  )
-`);
-db.exec(`CREATE INDEX IF NOT EXISTS idx_dong_codes_nm ON dong_codes(sigungu_cd, dong_nm)`);
-
 // ── API 키 ───────────────────────────────────────────────────────
-const KREB_API_KEY = process.env.KREB_API_KEY || "";
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
-const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
-const MOLIT_HOUSING_API_KEY = process.env.MOLIT_HOUSING_API_KEY || "";
 const JUSO_API_KEY = process.env.JUSO_API_KEY || "";
-const VWORLD_API_KEY = process.env.VWORLD_API_KEY || "";
+const KB_TOKEN = process.env.KB_TOKEN || "";
+const KB_BASE_URL = "https://api.kbland.kr";
 
-if (!KREB_API_KEY) console.warn("⚠️ KREB_API_KEY 환경변수가 설정되지 않았습니다");
 if (!MOLIT_API_KEY) console.warn("⚠️ MOLIT_API_KEY 환경변수가 설정되지 않았습니다");
-if (!BUILDING_API_KEY) console.warn("⚠️ BUILDING_API_KEY 환경변수가 설정되지 않았습니다");
-if (!VWORLD_API_KEY) console.warn("⚠️ VWORLD_API_KEY 환경변수가 설정되지 않았습니다");
-console.log(`[ENV] VWORLD_API_KEY: ${VWORLD_API_KEY ? VWORLD_API_KEY.substring(0, 8) + '...' : 'NOT SET'}`);
+if (!KB_TOKEN) console.warn("⚠️ KB_TOKEN 환경변수가 설정되지 않았습니다");
+console.log(`[ENV] KB_TOKEN: ${KB_TOKEN ? KB_TOKEN.substring(0, 8) + '...' : 'NOT SET'}`);
 
 // ── Express + Socket.io ─────────────────────────────────────────
 const app = express();
@@ -517,16 +513,25 @@ async function ensureRentCached(lawdCd, dealYmd) {
  *
  * buildYear, umdNm 필터 항상 함께 적용
  */
-function queryWithStrictMatch(db, tableName, cleanName, lawdCd, { buildYear, umdNm, area } = {}, orderBy = "") {
+function queryWithStrictMatch(db, tableName, cleanName, lawdCd, { buildYear, umdNm, area, monthList } = {}, orderBy = "") {
   const buildFilters = () => {
     let where = "";
     const params = [];
     if (buildYear) { where += " AND build_year = ?"; params.push(parseInt(buildYear)); }
     if (umdNm) { where += " AND umd_nm = ?"; params.push(umdNm); }
     if (area && area !== "전체") {
-      const areaNum = parseFloat(area);
-      where += " AND exclu_use_ar BETWEEN ? AND ?";
-      params.push(areaNum - 2, areaNum + 2);
+      const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
+      if (areaValues.length > 1) {
+        where += ` AND exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
+        params.push(...areaValues);
+      } else {
+        where += " AND exclu_use_ar IN (?)";
+        params.push(areaValues[0]);
+      }
+    }
+    if (monthList && monthList.length > 0) {
+      where += ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
+      params.push(...monthList);
     }
     return { where, params };
   };
@@ -563,89 +568,41 @@ function getMonthRange(months) {
 app.get("/api/search/apartment", async (req, res) => {
   const { query } = req.query;
   if (!query || query.length < 2) return res.json([]);
-  if (!KREB_API_KEY) return res.status(503).json({ error: "KREB API 키 미설정" });
+  if (!KB_TOKEN) return res.status(503).json({ error: "KB_TOKEN 미설정" });
 
   try {
-    // 도로명주소 패턴 감지 (로, 길, 대로 + 숫자)
-    const isRoadName = /(?:로|길|대로)\s*\d/.test(query);
+    // KB 자동완성 검색 (이름으로 전국 검색)
+    const params = new URLSearchParams();
+    params.set("컬렉션설정명", "COL_AT_JUSO:100;COL_AT_SCHOOL:100;COL_AT_SUBWAY:100;COL_AT_HSCM:100;COL_AT_VILLA:100");
+    params.set("검색키워드", query);
 
-    // 1. 도로명주소 검색 (juso.go.kr)
-    let jusoResults = [];
-    if (isRoadName && JUSO_API_KEY) {
-      try {
-        const jusoUrl = `https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${JUSO_API_KEY}&keyword=${encodeURIComponent(query)}&resultType=json&countPerPage=10&currentPage=1`;
-        const jusoRes = await fetch(jusoUrl, { timeout: 10000 });
-        const jusoData = await jusoRes.json();
-        const jusos = jusoData?.results?.juso || [];
-        // 아파트만 필터 (bdNm에 값이 있는 항목) → 병렬 KREB 조회
-        const aptJusos = jusos.filter(j => j.bdNm);
-        const krebPromises = aptJusos.map(j => {
-          const jibunDong = j.emdNm || "";
-          const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
-          const condAddr = encodeURIComponent("cond[주소::LIKE]") + "=" + encodeURIComponent(jibunDong);
-          const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(j.bdNm.replace(/아파트|단지/g, "").trim());
-          const krebUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=5&${condType}&${condAddr}&${condName}`;
-          return fetch(krebUrl, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] }));
-        });
-        const krebResults = await Promise.all(krebPromises);
-        for (const krebRes of krebResults) {
-          for (const item of (krebRes.data || [])) {
-            const pnu = String(item["필지고유번호"] || "");
-            jusoResults.push({
-              aptName: (item["단지명_공시가격"] || "").trim(),
-              address: (item["주소"] || "").trim(),
-              buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
-              units: parseInt(item["세대수"]) || null,
-              buildings: parseInt(item["동수"]) || null,
-              complexId: item["단지고유번호"] || null,
-              bjdongCd: pnu.length >= 10 ? pnu.substring(5, 10) : null,
-            });
-          }
-        }
-      } catch (e) {
-        console.warn("[JUSO] 도로명주소 검색 실패:", e.message);
-      }
-    }
-
-    // 2. KREB 이름/지번주소 검색 (기존)
-    const condType = encodeURIComponent("cond[단지종류::EQ]") + "=1";
-    const baseUrl = `https://api.odcloud.kr/api/15106861/v1/uddi:46a20910-19aa-462e-ba09-e897b77d0e76?serviceKey=${KREB_API_KEY}&page=1&perPage=15&${condType}`;
-
-    const condName = encodeURIComponent("cond[단지명_공시가격::LIKE]") + "=" + encodeURIComponent(query);
-    const condAddr = encodeURIComponent("cond[주소::LIKE]") + "=" + encodeURIComponent(query);
-
-    const [nameRes, addrRes] = await Promise.all([
-      fetch(`${baseUrl}&${condName}`, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] })),
-      fetch(`${baseUrl}&${condAddr}`, { timeout: 10000 }).then(r => r.json()).catch(() => ({ data: [] })),
-    ]);
-
-    // 3. 결과 합침 (도로명 결과 우선)
-    const seen = new Set();
-    const allItems = [...jusoResults];
-    for (const item of [...(nameRes.data || []), ...(addrRes.data || [])]) {
-      const pnu = String(item["필지고유번호"] || "");
-      allItems.push({
-        aptName: (item["단지명_공시가격"] || "").trim(),
-        address: (item["주소"] || "").trim(),
-        buildYear: item["사용승인일"] ? item["사용승인일"].slice(0, 4) : null,
-        units: parseInt(item["세대수"]) || null,
-        buildings: parseInt(item["동수"]) || null,
-        complexId: item["단지고유번호"] || null,
-        bjdongCd: pnu.length >= 10 ? pnu.substring(5, 10) : null,
-      });
-    }
+    const kbRes = await fetchKB("/land-complex/serch/autoKywrSerch", {
+      "컬렉션설정명": "COL_AT_JUSO:100;COL_AT_SCHOOL:100;COL_AT_SUBWAY:100;COL_AT_HSCM:100;COL_AT_VILLA:100",
+      "검색키워드": query,
+    });
+    const hscm = kbRes?.data?.[0]?.COL_AT_HSCM || [];
 
     const results = [];
-    for (const item of allItems) {
-      const id = item.complexId;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      results.push(item);
+    const seen = new Set();
+    for (const item of hscm) {
+      const name = (item.text || "").trim();
+      const addr = (item.addr || "").trim();
+      const key = `${name}_${addr}`;
+      if (seen.has(key) || !name) continue;
+      seen.add(key);
+      results.push({
+        aptName: name,
+        address: addr,
+        buildYear: null,
+        units: null,
+        buildings: null,
+      });
       if (results.length >= 20) break;
     }
+
     res.json(results);
   } catch (e) {
-    console.error("KREB 검색 실패:", e.message);
+    console.error("KB 검색 실패:", e.message);
     res.status(500).json({ error: "검색 서비스 오류" });
   }
 });
@@ -705,7 +662,7 @@ app.get("/api/apartment/areas", async (req, res) => {
     for (const r of rows) {
       if (!seen.has(r.exclu_use_ar)) {
         seen.add(r.exclu_use_ar);
-        areas.push({ area: r.exclu_use_ar, areaPyeong: Math.round(r.exclu_use_ar / 3.3058) });
+        areas.push({ area: r.exclu_use_ar, areaPyeong: Math.floor(r.exclu_use_ar / 3.3058) });
       }
     }
     res.json(areas);
@@ -769,8 +726,18 @@ app.get("/api/apartment/transactions", async (req, res) => {
 
     // 최근 데이터 조회 (month 필터 적용)
     const monthPlaceholders = ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
-    const areaFilter = (area && area !== "전체") ? ` AND exclu_use_ar BETWEEN ? AND ?` : "";
-    const areaParams = (area && area !== "전체") ? [parseFloat(area) - 2, parseFloat(area) + 2] : [];
+    let areaFilter = "";
+    let areaParams = [];
+    if (area && area !== "전체") {
+      const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
+      if (areaValues.length > 1) {
+        areaFilter = ` AND exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
+        areaParams = areaValues;
+      } else {
+        areaFilter = ` AND exclu_use_ar IN (?)`;
+        areaParams = [areaValues[0]];
+      }
+    }
 
     const recentExtra = monthPlaceholders + areaFilter;
     const recentParams = [...monthList, ...areaParams];
@@ -789,7 +756,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
         dongMap[key] = {
           dong,
           area: r.exclu_use_ar,
-          areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
+          areaPyeong: Math.floor(r.exclu_use_ar / 3.3058),
           recentPrice: r.deal_amount,
           recentDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
           recentFloor: r.floor,
@@ -814,7 +781,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
       }
     }
 
-    const transactions = rows.slice(0, 100).map(r => ({
+    const transactions = rows.map(r => ({
       dealDate: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
       dealAmount: r.deal_amount,
       floor: r.floor,
@@ -868,7 +835,7 @@ app.get("/api/apartment/rent", async (req, res) => {
     // DB에서 조회 (단계별 매칭: 정확 → starts-with fallback)
     const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
     const rows = queryWithStrictMatch(db, "rent_cache", cleanName, lawdCd,
-      { buildYear, umdNm, area },
+      { buildYear, umdNm, area, monthList },
       ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`);
 
     // 전세/월세 분리
@@ -882,7 +849,7 @@ app.get("/api/apartment/rent", async (req, res) => {
         monthlyRent: r.monthly_rent,
         floor: r.floor || 0,
         excluUseAr: r.exclu_use_ar,
-        areaPyeong: Math.round(r.exclu_use_ar / 3.3058),
+        areaPyeong: Math.floor(r.exclu_use_ar / 3.3058),
         umdNm: r.umd_nm || "",
         buildYear: r.build_year || 0,
       };
@@ -926,16 +893,26 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
-    const areaNum = parseFloat(area);
     const priceNum = parseInt(price);
     const months = getMonthRange(12);
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
+    // area가 콤마 구분이면 IN, 단일값이면 BETWEEN ±2
+    const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
+    let areaWhere, areaBinds;
+    if (areaValues.length > 1) {
+      areaWhere = `exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
+      areaBinds = areaValues;
+    } else {
+      areaWhere = `exclu_use_ar IN (?)`;
+      areaBinds = [areaValues[0]];
+    }
+
     // 구 내 동일 평수 모든 거래
     const guRows = db.prepare(`
       SELECT deal_amount, umd_nm FROM transaction_cache
-      WHERE lawd_cd = ? AND exclu_use_ar BETWEEN ? AND ?
-    `).all(lawdCd, areaNum - 5, areaNum + 5);
+      WHERE lawd_cd = ? AND ${areaWhere}
+    `).all(lawdCd, ...areaBinds);
 
     const guPrices = guRows.map(r => r.deal_amount);
     const guAvg = guPrices.length > 0 ? Math.round(guPrices.reduce((s, p) => s + p, 0) / guPrices.length) : null;
@@ -961,10 +938,10 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const allDongs = db.prepare(`
       SELECT umd_nm, AVG(deal_amount) as avg_price, COUNT(*) as cnt
       FROM transaction_cache
-      WHERE lawd_cd = ? ${areaNum ? "AND exclu_use_ar BETWEEN ? AND ?" : ""}
+      WHERE lawd_cd = ? AND ${areaWhere}
       GROUP BY umd_nm
       HAVING cnt >= 2
-    `).all(...(areaNum ? [lawdCd, areaNum - 5, areaNum + 5] : [lawdCd]));
+    `).all(lawdCd, ...areaBinds);
 
     if (JUSO_COORD_KEY && umdNm && allDongs.length > 1) {
       const guNmForCoord = req.query.guNm || "";
@@ -1038,486 +1015,276 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
   }
 });
 
-// ── 건축물대장 API (Building Registry) ──────────────────────────────
-
-const BUILDING_API_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService";
-const HOUSING_API_BASE = "https://apis.data.go.kr/1613000";
+// ── KB부동산 API ──────────────────────────────────────────────────
 
 /**
- * 건축물대장 API 응답 파싱 (에러 감지 + 재시도 포함)
- * data.go.kr API는 rate limit 시 body 없이 에러 헤더만 반환
+ * KB부동산 API 공통 호출 래퍼
  */
-async function fetchBuildingApi(url, label, retries = 1) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) {
-      console.log(`[BUILDING] ${label} 재시도 ${attempt}/${retries} (300ms 대기)`);
-      await new Promise(r => setTimeout(r, 300));
-    }
-    try {
-      const res = await fetch(url, { timeout: 15000 });
-      const data = await res.json();
-      const resultCode = data?.response?.header?.resultCode;
-      const resultMsg = data?.response?.header?.resultMsg || "";
-      if (resultCode && resultCode !== "00") {
-        console.warn(`[BUILDING] ${label} API 에러: code=${resultCode}, msg=${resultMsg}`);
-        if (attempt < retries) continue; // 재시도
-        return { items: null, error: resultMsg };
+async function fetchKB(endpoint, params = {}) {
+  if (!KB_TOKEN) throw new Error("KB_TOKEN 미설정");
+  const queryStr = Object.entries(params)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+  const url = `${KB_BASE_URL}${endpoint}${queryStr ? "?" + queryStr : ""}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Authorization": `bearer ${KB_TOKEN}`,
+      "WebService": "1",
+      "Referer": "https://kbland.kr/",
+    },
+    timeout: 15000,
+  });
+  if (!res.ok) throw new Error(`KB API ${res.status}: ${endpoint}`);
+  const data = await res.json();
+  if (data?.dataHeader?.resultCode !== "10000") {
+    const msg = data?.dataBody?.message || data?.dataHeader?.message || "Unknown error";
+    throw new Error(`KB API 오류: ${msg}`);
+  }
+  return data.dataBody;
+}
+
+/**
+ * KB 법정동코드로 해당 지역 아파트 목록 조회
+ */
+async function searchKBComplex(lawdCd) {
+  const body = await fetchKB("/land-price/price/fastPriceComplexName", { "법정동코드": lawdCd });
+  return body?.data || [];
+}
+
+/**
+ * KB 단지기본일련번호로 타입 정보 조회
+ */
+async function fetchKBTypInfo(complexSerial) {
+  const body = await fetchKB("/land-complex/complex/typInfo", { "단지기본일련번호": complexSerial });
+  return body?.data || [];
+}
+
+/**
+ * KB 단지기본일련번호로 단지 기본정보 조회
+ */
+async function fetchKBComplexMain(complexSerial) {
+  const body = await fetchKB("/land-complex/complex/main", { "단지기본일련번호": complexSerial });
+  return body?.data || null;
+}
+
+/**
+ * KB 단지기본일련번호로 단지 브리프 조회
+ */
+async function fetchKBComplexBrif(complexSerial) {
+  const body = await fetchKB("/land-complex/complex/brif", { "단지기본일련번호": complexSerial });
+  return body?.data || null;
+}
+
+/**
+ * KB 단지 정보 캐시 통합 함수
+ * type_data는 영구 캐시, complex_data/brif_data는 30일
+ */
+async function getKBComplexCached(complexSerial) {
+  const cacheKey = String(complexSerial);
+  const cached = db.prepare("SELECT complex_data, type_data, brif_data, fetched_at FROM kb_complex_cache WHERE cache_key = ?").get(cacheKey);
+
+  const now = Math.floor(Date.now() / 1000);
+  const THIRTY_DAYS = 30 * 24 * 60 * 60;
+
+  // type_data는 영구 캐시 (공급면적 불변)
+  if (cached?.type_data) {
+    const types = JSON.parse(cached.type_data);
+    let main = cached.complex_data ? JSON.parse(cached.complex_data) : null;
+    let brif = cached.brif_data ? JSON.parse(cached.brif_data) : null;
+
+    // complex_data/brif_data가 30일 지났으면 갱신
+    if (!main || (now - cached.fetched_at > THIRTY_DAYS)) {
+      try {
+        const [newMain, newBrif] = await Promise.all([
+          fetchKBComplexMain(complexSerial),
+          fetchKBComplexBrif(complexSerial),
+        ]);
+        main = newMain;
+        brif = newBrif;
+        db.prepare("UPDATE kb_complex_cache SET complex_data = ?, brif_data = ?, fetched_at = unixepoch() WHERE cache_key = ?")
+          .run(JSON.stringify(main), JSON.stringify(brif), cacheKey);
+      } catch (e) {
+        console.warn("[KB] 단지정보 갱신 실패 (캐시 사용):", e.message);
       }
-      const items = data?.response?.body?.items?.item;
-      return { items: items || null, error: null };
-    } catch (e) {
-      console.warn(`[BUILDING] ${label} attempt ${attempt} 실패:`, e.message);
-      if (attempt >= retries) return { items: null, error: e.message };
     }
+
+    console.log(`[KB] 캐시 히트: ${cacheKey} (${types.length}개 타입)`);
+    return { main, types, brif };
   }
-  return { items: null, error: "max retries exceeded" };
+
+  // 캐시 미스: 3개 API 병렬 호출
+  console.log(`[KB] 캐시 미스: ${cacheKey} - API 호출`);
+  const [main, types, brif] = await Promise.all([
+    fetchKBComplexMain(complexSerial),
+    fetchKBTypInfo(complexSerial),
+    fetchKBComplexBrif(complexSerial),
+  ]);
+
+  db.prepare("INSERT OR REPLACE INTO kb_complex_cache (cache_key, complex_data, type_data, brif_data) VALUES (?, ?, ?, ?)")
+    .run(cacheKey, JSON.stringify(main), JSON.stringify(types), JSON.stringify(brif));
+
+  console.log(`[KB] 캐시 저장: ${cacheKey} (${types.length}개 타입)`);
+  return { main, types, brif };
 }
 
 /**
- * 단지목록 API: 법정동코드 10자리로 kaptCode 조회
+ * KB 법정동코드 + 아파트명으로 단지기본일련번호 매칭
  */
-async function findKaptCode(bjdCode10, aptName) {
-  if (!MOLIT_HOUSING_API_KEY) return null;
-  try {
-    const url = `${HOUSING_API_BASE}/AptListService3/getLegaldongAptList3?serviceKey=${MOLIT_HOUSING_API_KEY}&bjdCode=${bjdCode10}&pageNo=1&numOfRows=50`;
-    const res = await fetch(url, { timeout: 10000 });
-    const data = await res.json();
-    const items = data?.response?.body?.items;
-    if (!items || !Array.isArray(items)) return null;
+async function findKBComplexSerial(lawdCd, aptName) {
+  if (!aptName || !lawdCd) return null;
 
-    // 3단계 엄격 매칭: 정확일치 → startsWith → includes(최단 1개)
-    const normalize = (s) => (s || "").replace(/아파트|단지|APT|\(.*?\)/gi, "").trim();
-    const cleanName = normalize(aptName);
-    if (!cleanName) return null;
+  const allComplexes = await searchKBComplex(lawdCd);
+  if (!allComplexes.length) return null;
 
-    const candidates = items.filter(it => it.kaptName).map(it => ({
-      code: it.kaptCode,
-      name: normalize(it.kaptName),
-      raw: it.kaptName,
-    }));
+  const normalize = (s) => (s || "")
+    .replace(/[\s()（）\-·,.·]/g, "")
+    .replace(/에스케이/g, "sk").replace(/엘지/g, "lg").replace(/지에스/g, "gs")
+    .replace(/케이비/g, "kb").replace(/에이치/g, "h").replace(/디에이치/g, "dh")
+    .replace(/아이파크/g, "ipark").replace(/자이/g, "xi")
+    .toLowerCase();
+  const target = normalize(aptName);
 
-    // Tier 1: 정확 일치
-    const exact = candidates.find(c => c.name === cleanName);
-    if (exact) { console.log(`[HOUSING] kaptCode 매칭 (정확일치): "${exact.raw}"`); return exact.code; }
-
-    // Tier 2: startsWith (짧은 이름 우선)
-    const startsWith = candidates
-      .filter(c => c.name.startsWith(cleanName) || cleanName.startsWith(c.name))
-      .sort((a, b) => a.name.length - b.name.length);
-    if (startsWith.length) { console.log(`[HOUSING] kaptCode 매칭 (startsWith): "${startsWith[0].raw}"`); return startsWith[0].code; }
-
-    // Tier 3: includes (최단 1개만, 최후 수단)
-    const includes = candidates
-      .filter(c => c.name.includes(cleanName) || cleanName.includes(c.name))
-      .sort((a, b) => a.name.length - b.name.length);
-    if (includes.length) { console.log(`[HOUSING] kaptCode 매칭 (includes): "${includes[0].raw}"`); return includes[0].code; }
-
-    console.log(`[HOUSING] kaptCode 매칭 실패: "${aptName}" (후보: ${candidates.map(c => c.raw).join(", ")})`);
-    return null;
-  } catch (e) {
-    console.error("[HOUSING] 단지목록 조회 실패:", e.message);
-    return null;
-  }
-}
-
-/**
- * 공동주택 기본정보 API: kaptCode로 상세정보 조회
- */
-async function fetchHousingBasicInfo(kaptCode) {
-  if (!MOLIT_HOUSING_API_KEY || !kaptCode) return null;
-  try {
-    const url = `${HOUSING_API_BASE}/AptBasisInfoServiceV4/getAphusBassInfoV4?ServiceKey=${MOLIT_HOUSING_API_KEY}&kaptCode=${kaptCode}`;
-    const res = await fetch(url, { timeout: 10000 });
-    const data = await res.json();
-    return data?.response?.body?.item || null;
-  } catch (e) {
-    console.error("[HOUSING] 기본정보 조회 실패:", e.message);
-    return null;
-  }
-}
-
-/**
- * 공동주택 상세정보 API: kaptCode로 주차대수 등 상세정보 조회
- */
-async function fetchHousingDetailInfo(kaptCode) {
-  if (!MOLIT_HOUSING_API_KEY || !kaptCode) return null;
-  try {
-    const url = `${HOUSING_API_BASE}/AptBasisInfoServiceV4/getAphusDtlInfoV4?ServiceKey=${MOLIT_HOUSING_API_KEY}&kaptCode=${kaptCode}`;
-    const res = await fetch(url, { timeout: 10000 });
-    const data = await res.json();
-    return data?.response?.body?.item || null;
-  } catch (e) {
-    console.error("[HOUSING] 상세정보 조회 실패:", e.message);
-    return null;
-  }
-}
-
-/**
- * 대지권등록정보 API: PNU로 대지면적 조회 (용적률 계산용)
- */
-async function fetchLandArea(pnu) {
-  console.log(`[LAND] fetchLandArea 호출: pnu=${pnu}, VWORLD_KEY=${VWORLD_API_KEY ? 'SET' : 'NOT SET'}`);
-  if (!VWORLD_API_KEY || !pnu) { console.log(`[LAND] 조기 반환: key=${!!VWORLD_API_KEY}, pnu=${!!pnu}`); return null; }
-  try {
-    const url = `https://api.vworld.kr/ned/data/ldaregList?key=${VWORLD_API_KEY}&pnu=${pnu}&format=json&numOfRows=1`;
-    const res = await fetch(url, { timeout: 10000 });
-    const text = await res.text();
-    console.log(`[LAND] API 응답: ${text.substring(0, 200)}`);
-    const data = JSON.parse(text);
-    const item = data?.ldaregVOList?.ldaregVOList?.[0];
-    if (!item?.ldaQotaRate) { console.log(`[LAND] ldaQotaRate 없음`); return null; }
-    // ldaQotaRate: "42.25/12524.1" → 분모가 대지면적
-    const parts = item.ldaQotaRate.split("/");
-    if (parts.length === 2) {
-      const area = parseFloat(parts[1]);
-      if (area > 0) { console.log(`[LAND] 대지권 대지면적: ${area}㎡`); return area; }
+  // 1차: 정확 일치
+  let match = allComplexes.find(c => normalize(c["단지명"]) === target);
+  // 2차: 포함 매칭 (target을 포함하는 것 우선, 그 중 가장 짧은 것)
+  if (!match) {
+    // 2a: KB 이름이 target을 포함 (예: "동아청솔1차" includes "동아청솔")
+    const containsTarget = allComplexes.filter(c => normalize(c["단지명"]).includes(target));
+    if (containsTarget.length > 0) {
+      containsTarget.sort((a, b) => normalize(a["단지명"]).length - normalize(b["단지명"]).length);
+      match = containsTarget[0];
     }
-    return null;
-  } catch (e) {
-    console.warn("[LAND] 대지권등록정보 조회 실패:", e.message);
-    return null;
-  }
-}
-
-/**
- * 주소 파싱: KREB 주소에서 동이름, 번지를 추출
- * 예: "서울특별시 동대문구 청량리동 60" → { dongNm: "청량리동", bun: "0060", ji: "0000" }
- * 예: "서울특별시 동대문구 청량리동 60-5" → { dongNm: "청량리동", bun: "0060", ji: "0005" }
- */
-function parseKrebAddress(address) {
-  const parts = address.trim().split(/\s+/);
-  let dongNm = "";
-  let bunJi = "";
-
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    if (/[동읍면리가로]$/.test(part) && part.length >= 2) {
-      dongNm = part;
-      // 번지는 동이름 다음에 오는 숫자(들)
-      if (i + 1 < parts.length) {
-        bunJi = parts.slice(i + 1).join(" ");
+    // 2b: target이 KB 이름을 포함 (예: "동아청솔" includes "동아") - 가장 긴 매칭 우선
+    if (!match) {
+      const targetContains = allComplexes.filter(c => target.includes(normalize(c["단지명"])));
+      if (targetContains.length > 0) {
+        targetContains.sort((a, b) => normalize(b["단지명"]).length - normalize(a["단지명"]).length);
+        match = targetContains[0];
       }
-      break;
     }
   }
 
-  let bun = "0000";
-  let ji = "0000";
-
-  if (bunJi) {
-    const match = bunJi.match(/^(\d+)(?:-(\d+))?/);
-    if (match) {
-      bun = String(match[1]).padStart(4, "0");
-      ji = match[2] ? String(match[2]).padStart(4, "0") : "0000";
+  // 3차: 단어 분할 매칭 (target의 주요 단어가 KB 이름에 모두 포함)
+  if (!match && target.length >= 3) {
+    const tokens = (aptName || "").replace(/[\s()（）\-·,.·0-9]/g, " ").trim().split(/\s+/).filter(t => t.length >= 2);
+    if (tokens.length >= 1) {
+      const scored = allComplexes.map(c => {
+        const n = normalize(c["단지명"]);
+        const hits = tokens.filter(t => n.includes(normalize(t))).length;
+        return { complex: c, hits, ratio: hits / tokens.length };
+      }).filter(s => s.ratio >= 0.5 && s.hits >= 1);
+      scored.sort((a, b) => b.ratio - a.ratio || b.hits - a.hits);
+      if (scored.length > 0) match = scored[0].complex;
     }
   }
 
-  return { dongNm, bun, ji };
-}
-
-/**
- * 법정동코드 조회: 동이름으로 bjdongCd 조회
- * 1. 먼저 dong_codes 테이블에서 캐시 확인
- * 2. 없으면 단지목록 API로 시군구 내 단지를 조회하여 bjdCode 추출 후 캐시
- */
-async function resolveBjdongCd(sigunguCd, dongNm) {
-  // 1. 캐시 확인
-  const cached = db.prepare(
-    "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm = ?"
-  ).get(sigunguCd, dongNm);
-  if (cached) return cached.bjdong_cd;
-
-  // 2. 단지목록 API로 시군구 내 모든 단지 조회하여 bjdCode 수집
-  try {
-    console.log("[DONG] 단지목록 API로 법정동코드 조회:", sigunguCd, dongNm);
-    const url = `https://apis.data.go.kr/1613000/AptListService3/getSigunguAptList3?serviceKey=${MOLIT_HOUSING_API_KEY}&sigunguCode=${sigunguCd}&pageNo=1&numOfRows=1000`;
-    const res = await fetch(url, { timeout: 15000 });
-    const data = await res.json();
-    const items = data?.response?.body?.items || [];
-
-    if (items.length === 0) {
-      console.log("[DONG] 단지목록 결과 없음");
-      return null;
-    }
-
-    // bjdCode에서 동코드 추출하여 캐시
-    const insertDong = db.prepare(
-      "INSERT OR IGNORE INTO dong_codes (sigungu_cd, bjdong_cd, dong_nm) VALUES (?, ?, ?)"
-    );
-    const seenCodes = new Set();
-    const tx = db.transaction(() => {
-      for (const item of items) {
-        const bjdCode = item.bjdCode;
-        if (!bjdCode || bjdCode.length < 10 || seenCodes.has(bjdCode)) continue;
-        seenCodes.add(bjdCode);
-        const itemSigungu = bjdCode.substring(0, 5);
-        const itemBjdong = bjdCode.substring(5, 10);
-        const itemDongNm = item.as3 || "";
-        if (itemDongNm && itemSigungu === sigunguCd) {
-          insertDong.run(itemSigungu, itemBjdong, itemDongNm);
-        }
-      }
-    });
-    tx();
-
-    // 다시 캐시에서 확인
-    const result = db.prepare(
-      "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm = ?"
-    ).get(sigunguCd, dongNm);
-    if (result) return result.bjdong_cd;
-
-    // 부분 매칭 시도 (동이름에서 '동' 제거 후 LIKE 검색)
-    const baseName = dongNm.replace(/[동읍면리가로]$/, "");
-    const likeResult = db.prepare(
-      "SELECT bjdong_cd FROM dong_codes WHERE sigungu_cd = ? AND dong_nm LIKE ?"
-    ).get(sigunguCd, `${baseName}%`);
-    if (likeResult) return likeResult.bjdong_cd;
-
-    return null;
-  } catch (e) {
-    console.error("[DONG] 법정동코드 조회 실패:", e.message);
-    return null;
+  if (match) {
+    console.log(`[KB] 매칭 성공: "${aptName}" → "${match["단지명"]}" (ID: ${match["단지기본일련번호"]})`);
+    return { serial: match["단지기본일련번호"], name: match["단지명"], address: match["주소"] };
   }
+
+  console.log(`[KB] 매칭 실패: "${aptName}" (후보: ${allComplexes.slice(0, 5).map(c => c["단지명"]).join(", ")})`);
+  return null;
 }
 
-/**
- * 건축물대장 표제부 조회
- */
-async function fetchBuildingTitle(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_BASE}/getBrTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1&_type=json`;
-  console.log("[BUILDING] 표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const { items, error } = await fetchBuildingApi(url, "표제부", 1);
-  if (error) console.warn("[BUILDING] 표제부 조회 실패:", error);
-  if (!items) return [];
-  return Array.isArray(items) ? items : [items];
-}
-
-/**
- * 건축물대장 총괄표제부 조회 (용적률, 건폐율, 주차대수 등 단지 전체 정보)
- */
-async function fetchBuildingRecapTitle(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_BASE}/getBrRecapTitleInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=10&pageNo=1&_type=json`;
-  console.log("[BUILDING] 총괄표제부 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-  const { items, error } = await fetchBuildingApi(url, "총괄표제부", 2);
-  if (error) console.warn("[BUILDING] 총괄표제부 조회 실패:", error);
-  if (!items) {
-    console.warn("[BUILDING] 총괄표제부 데이터 없음 (items=null)");
-    return null;
-  }
-  const arr = Array.isArray(items) ? items : [items];
-  const result = arr[0] || null;
-  if (result) {
-    console.log(`[BUILDING] 총괄표제부 확인: vlRat=${result.vlRat}, bcRat=${result.bcRat}, totPkngCnt=${result.totPkngCnt}, hhldCnt=${result.hhldCnt}`);
-  }
-  return result;
-}
-
-/**
- * 건축물대장 전유공용면적 조회 (페이지네이션)
- */
-async function fetchBuildingArea(sigunguCd, bjdongCd, bun, ji) {
-  let allItems = [];
-  for (let page = 1; page <= 20; page++) {
-    const url = `${BUILDING_API_BASE}/getBrExposPubuseAreaInfo?serviceKey=${BUILDING_API_KEY}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=${page}&_type=json`;
-    if (page === 1) console.log("[BUILDING] 전유면적 요청:", url.replace(BUILDING_API_KEY, "***KEY***"));
-    const { items, error } = await fetchBuildingApi(url, `전유면적(p${page})`, 1);
-    if (error) { console.warn("[BUILDING] 전유면적 조회 실패:", error); break; }
-    if (!items) break;
-    const arr = Array.isArray(items) ? items : [items];
-    allItems.push(...arr);
-    if (arr.length < 100) break; // 마지막 페이지
-  }
-  console.log(`[BUILDING] 전유면적 총 ${allItems.length}건 조회`);
-  return allItems;
-}
-
-// ── 건축물대장 단지 정보 조회 엔드포인트 ─────────────────────────────
+// ── KB 기반 단지 정보 조회 엔드포인트 ─────────────────────────────
 app.get("/api/apartment/complex-info", async (req, res) => {
-  const { lawdCd, address } = req.query;
-  if (!lawdCd || !address) return res.status(400).json({ error: "lawdCd, address 필수" });
-  if (!BUILDING_API_KEY) return res.status(503).json({ error: "건축물대장 API 키 미설정" });
+  const { lawdCd, address, aptName } = req.query;
+  if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
+  if (!KB_TOKEN) return res.status(503).json({ error: "KB_TOKEN 미설정" });
 
   try {
-    const { dongNm, bun, ji } = parseKrebAddress(address);
-    if (!dongNm) {
-      return res.status(400).json({ error: "주소에서 동 이름을 찾을 수 없습니다" });
-    }
+    // KB 단지 매칭: lawdCd(5자리 구코드)를 10자리 법정동코드로 확장하여 검색
+    // bjdongCd가 있으면 10자리, 없으면 5자리로 검색
+    const bjdongCd = req.query.bjdongCd || "";
+    const searchCode = bjdongCd ? (lawdCd + bjdongCd) : lawdCd;
 
-    console.log(`[COMPLEX] 파싱 결과: dongNm=${dongNm}, bun=${bun}, ji=${ji}, lawdCd=${lawdCd}`);
-
-    // bjdongCd 조회: 쿼리 파라미터로 전달된 값 우선, 없으면 단지목록 API로 조회
-    let bjdongCd = req.query.bjdongCd || null;
-    if (!bjdongCd) {
-      bjdongCd = await resolveBjdongCd(lawdCd, dongNm);
-    }
-    if (!bjdongCd) {
-      return res.status(404).json({ error: `법정동코드를 찾을 수 없습니다: ${dongNm}` });
-    }
-
-    console.log(`[COMPLEX] bjdongCd 확인: ${bjdongCd}`);
-
-    // 건축물대장 API는 동일 서비스 동시 호출 시 rate limit 발생 가능
-    // → 건축물대장 3건은 순차 호출, 공동주택 코드 조회는 별도 서비스이므로 병렬
-    const bjdCode10 = lawdCd + bjdongCd;
-    let kaptCode = req.query.kaptCode || null;
-
-    const buildingPromise = (async () => {
-      let titleItems = [];
-      let recapTitle = null;
-      let areaItems = [];
-      try { titleItems = await fetchBuildingTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 표제부 조회 예외:", e.message); }
-      try { recapTitle = await fetchBuildingRecapTitle(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 총괄표제부 조회 예외:", e.message); }
-      try { areaItems = await fetchBuildingArea(lawdCd, bjdongCd, bun, ji); } catch (e) { console.warn("[BUILDING] 전유면적 조회 예외:", e.message); }
-      return { titleItems, recapTitle, areaItems };
-    })();
-
-    // kaptCode가 전달되면 재매칭 없이 직접 사용, 없으면 이름 매칭으로 조회
-    const kaptPromise = kaptCode
-      ? Promise.resolve(kaptCode)
-      : findKaptCode(bjdCode10, req.query.aptName || "");
-
-    const [buildingResult, resolvedKaptCode] = await Promise.all([buildingPromise, kaptPromise]);
-    kaptCode = resolvedKaptCode;
-    const { titleItems, recapTitle, areaItems } = buildingResult;
-
-    // kaptCode로 공동주택 기본정보 + 상세정보 병렬 조회
-    const [housingInfo, housingDetail] = kaptCode
-      ? await Promise.all([fetchHousingBasicInfo(kaptCode), fetchHousingDetailInfo(kaptCode)])
-      : [null, null];
-
-    if (titleItems.length === 0 && !recapTitle && !housingInfo) {
-      return res.status(404).json({ error: "건축물대장 정보를 찾을 수 없습니다" });
-    }
-
-    // 총괄표제부에서 단지 전체 정보 (용적률, 건폐율, 주차, 세대수)
-    let totalHhld = parseInt(recapTitle?.hhldCnt) || 0;
-    let totalPkng = parseInt(recapTitle?.totPkngCnt) || 0;
-
-    // 총괄표제부에 주차 정보 없으면 공동주택 상세정보에서 폴백
-    if (!totalPkng && housingDetail) {
-      totalPkng = (parseInt(housingDetail.kaptdPcnt) || 0) + (parseInt(housingDetail.kaptdPcntu) || 0);
-      if (totalPkng) console.log(`[COMPLEX] 총괄표제부 주차 미등록 → 공동주택 상세정보 폴백: ${totalPkng}대`);
-    }
-    let bcRat = parseFloat(recapTitle?.bcRat) || 0;
-    let vlRat = parseFloat(recapTitle?.vlRat) || 0;
-    let totArea = parseFloat(recapTitle?.totArea) || 0;
-
-    // 총괄표제부에 용적률/건폐율이 없으면(구대장 등) 표제부에서 폴백
-    if ((!bcRat || !vlRat) && titleItems.length > 0) {
-      if (!bcRat) bcRat = parseFloat(titleItems[0].bcRat) || 0;
-      if (!vlRat) vlRat = parseFloat(titleItems[0].vlRat) || 0;
-      if (bcRat || vlRat) console.log(`[COMPLEX] 총괄표제부 미등록 → 표제부 폴백: bcRat=${bcRat}, vlRat=${vlRat}`);
-    }
-
-    // 표제부에도 용적률 없으면 대지권등록정보 API로 대지면적 조회하여 계산
-    if (!vlRat && totArea > 0) {
-      const pnu = lawdCd + bjdongCd + "1" + bun + ji; // 19자리 PNU 구성 (대장구분: 1=토지)
-      const landArea = await fetchLandArea(pnu);
-      if (landArea) {
-        vlRat = Math.round((totArea / landArea) * 10000) / 100;
-        console.log(`[COMPLEX] 대지권 폴백: totArea=${totArea}, 대지면적=${landArea}, vlRat=${vlRat}%`);
+    const kbMatch = await findKBComplexSerial(searchCode, aptName);
+    if (!kbMatch) {
+      // 5자리로 재시도
+      let retryMatch = null;
+      if (bjdongCd) {
+        retryMatch = await findKBComplexSerial(lawdCd, aptName);
       }
-    }
-
-    // 표제부에서 동별 정보 (최고층, 지하층, 사용승인일)
-    let maxFloor = 0;
-    let maxUgrndFloor = 0;
-    let useAprDay = "";
-    const buildingNames = [];
-
-    for (const item of titleItems) {
-      const grndFlr = parseInt(item.grndFlrCnt) || 0;
-      const ugrndFlr = parseInt(item.ugrndFlrCnt) || 0;
-
-      if (grndFlr > maxFloor) maxFloor = grndFlr;
-      if (ugrndFlr > maxUgrndFloor) maxUgrndFloor = ugrndFlr;
-      if (!useAprDay && item.useAprDay) useAprDay = String(item.useAprDay);
-
-      if (item.bldNm) buildingNames.push(item.bldNm);
-    }
-
-    // 호별 그룹핑으로 전용면적 + 주거공용면적 → 공급면적 계산
-    const unitMap = {};
-    for (const item of areaItems) {
-      const key = (item.dongNm || "") + "-" + (item.hoNm || "");
-      if (!unitMap[key]) unitMap[key] = { exclusive: 0, mainPurps: "", pubItems: [] };
-      const gbNm = String(item.exposPubuseGbCdNm || "").trim();
-      if (gbNm === "전유") {
-        unitMap[key].exclusive = parseFloat(item.area) || 0;
-        unitMap[key].mainPurps = item.mainPurpsCdNm || "";
-      } else if (gbNm === "공용") {
-        unitMap[key].pubItems.push({
-          area: parseFloat(item.area) || 0,
-          etcPurps: item.etcPurps || "",
-          mainAtch: item.mainAtchGbCdNm || "",
-        });
+      if (!retryMatch) {
+        return res.status(404).json({ error: `KB에서 단지를 찾을 수 없습니다: ${aptName}` });
       }
+      Object.assign(kbMatch || {}, retryMatch);
     }
 
-    // 전용면적 타입별 공급면적 산출 (아파트 용도만, 10㎡ 초과)
-    const supplyByExclusive = {};
-    for (const unit of Object.values(unitMap)) {
-      if (!unit.exclusive || unit.exclusive <= 10) continue;
-      if (unit.mainPurps && unit.mainPurps !== "아파트") continue;
-      const areaKey = Math.round(unit.exclusive * 100) / 100;
-      if (supplyByExclusive[areaKey]) continue; // 타입별 1개만 필요
-      // 주거공용 = 주건축물 공용 중 주차장/펌프실/전기실/기계실 제외
-      const residentialCommon = unit.pubItems
-        .filter(p => p.mainAtch === "주건축물" && !/주차|펌프|전기|기계/.test(p.etcPurps))
-        .reduce((sum, p) => sum + p.area, 0);
-      supplyByExclusive[areaKey] = areaKey + residentialCommon;
+    const serial = (kbMatch || {}).serial;
+    if (!serial) {
+      return res.status(404).json({ error: `KB에서 단지를 찾을 수 없습니다: ${aptName}` });
     }
 
-    // 면적 정렬 및 평수 변환
-    const sortedAreas = Object.keys(supplyByExclusive).map(Number).sort((a, b) => a - b);
-    const areaList = sortedAreas.map(a => {
-      const supplyArea = Math.round(supplyByExclusive[a]);
-      return {
-        area: a,
-        areaPyeong: Math.round(a / 3.3058),
-        supplyArea,
-        supplyPyeong: Math.round(supplyArea / 3.3058),
-      };
-    });
+    // KB 단지 정보 + 타입 정보 조회 (캐시)
+    const { main, types, brif } = await getKBComplexCached(serial);
 
-    // 사용승인일 포맷
-    let useAprDate = "";
-    if (useAprDay && useAprDay.length >= 8) {
-      useAprDate = `${useAprDay.substring(0, 4)}.${useAprDay.substring(4, 6)}.${useAprDay.substring(6, 8)}`;
+    // 면적 타입 생성: Math.floor(공급면적) 기준 그룹핑
+    const typeMap = {};
+    for (const t of (types || [])) {
+      const supplyRaw = parseFloat(t["공급면적"]);
+      const exclRaw = parseFloat(t["전용면적"]);
+      if (!supplyRaw || !exclRaw) continue;
+
+      const supplyFloor = Math.floor(supplyRaw);
+      if (!typeMap[supplyFloor]) {
+        typeMap[supplyFloor] = {
+          exclusiveAreas: new Set(),
+          supplyArea: supplyFloor,
+          households: 0,
+        };
+      }
+      typeMap[supplyFloor].exclusiveAreas.add(exclRaw);
+      typeMap[supplyFloor].households += parseInt(t["세대수"]) || 0;
     }
 
-    // 세대당 주차대수
-    const parkingPerUnit = totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0;
+    const exclusiveAreas = Object.entries(typeMap)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([supplyStr, g]) => {
+        const exclArr = [...g.exclusiveAreas].sort((a, b) => a - b);
+        return {
+          area: exclArr[0],
+          areaPyeong: Math.floor(exclArr[0] / 3.3058),
+          supplyArea: Number(supplyStr),
+          supplyPyeong: Math.floor(Number(supplyStr) / 3.3058),
+          groupedExclusiveAreas: exclArr,
+        };
+      });
+
+    // 응답 구성 (기존 호환)
+    const totalHhld = parseInt(main?.["총세대수"]) || 0;
+    const totalPkng = parseInt(main?.["총주차대수"]) || 0;
 
     const result = {
-      kaptCode: kaptCode || null,
-      buildingCount: titleItems.length,
-      buildingNames,
-      maxFloor,
-      maxUgrndFloor,
+      kbComplexSerial: serial,
+      buildingCount: parseInt(main?.["총동수"]) || 0,
+      buildingNames: [],
+      maxFloor: parseInt(main?.["최고층수"]) || 0,
+      maxUgrndFloor: 0,
       totalHouseholds: totalHhld,
       totalParking: totalPkng,
-      parkingPerUnit,
-      bcRat: Math.round(bcRat * 100) / 100,
-      vlRat: Math.round(vlRat * 100) / 100,
-      useAprDate,
-      totArea: Math.round(totArea * 100) / 100,
-      exclusiveAreas: areaList,
-      // 공동주택 기본정보 (단지목록 API에서 조회)
-      heatType: housingInfo?.codeHeatNm || null,
-      constructor: housingInfo?.kaptBcompany || null,
-      developer: housingInfo?.kaptAcompany || null,
-      manageTel: housingInfo?.kaptTel ? housingInfo.kaptTel.replace(/[^0-9]/g, "").replace(/^(02)(\d{3,4})(\d{4})$/, "$1-$2-$3").replace(/^(0\d{2})(\d{3,4})(\d{4})$/, "$1-$2-$3") : null,
-      manageType: housingInfo?.codeMgrNm || null,
-      hallType: housingInfo?.codeHallNm || null,
-      doroJuso: housingInfo?.doroJuso || null,
+      parkingPerUnit: totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0,
+      bcRat: 0,
+      vlRat: 0,
+      useAprDate: main?.["준공년월일"] ? main["준공년월일"].replace(/(\d{4})(\d{2})(\d{2})/, "$1.$2.$3") : null,
+      totArea: 0,
+      exclusiveAreas,
+      heatType: null,
+      constructor: null,
+      developer: null,
+      manageTel: null,
+      manageType: null,
+      hallType: null,
+      doroJuso: main?.["도로기본주소"] ? `${main["도로기본주소"]} ${main["도로명건물본번"] || ""}`.trim() : null,
     };
 
-    console.log(`[COMPLEX] 결과: ${titleItems.length}개동, 최고${maxFloor}층, 용적률${vlRat}%`);
+    console.log(`[COMPLEX] KB 조회 완료: ${aptName} → ${exclusiveAreas.length}개 타입`);
     res.json(result);
   } catch (e) {
-    console.error("건축물대장 조회 실패:", e.message, e.stack);
-    res.status(500).json({ error: "건축물대장 조회 실패", detail: e.message });
+    console.error("KB 단지정보 조회 실패:", e.message, e.stack);
+    res.status(500).json({ error: "단지정보 조회 실패", detail: e.message });
   }
 });
 
