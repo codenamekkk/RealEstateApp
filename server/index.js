@@ -465,6 +465,10 @@ async function ensureCached(lawdCd, dealYmd) {
         const amount = parseInt(String(item.dealAmount || "0").replace(/,/g, "").trim());
         const area = parseFloat(item.excluUseAr || 0);
         if (!item.aptNm || !amount || !area) continue;
+        // jibun 구성: bonbun(본번) + bubun(부번) → "104-1" 형태
+        const bonbun = String(item.bonbun || "").replace(/^0+/, "").trim();
+        const bubun = String(item.bubun || "").replace(/^0+/, "").trim();
+        const jibun = bonbun ? (bubun && bubun !== "0" ? `${bonbun}-${bubun}` : bonbun) : String(item.jibun || "").trim();
         insert.run(
           lawdCd, dealYmd,
           String(item.aptNm).trim(),
@@ -473,7 +477,7 @@ async function ensureCached(lawdCd, dealYmd) {
           parseInt(item.floor) || null,
           parseInt(item.buildYear) || null,
           String(item.umdNm || "").trim(),
-          String(item.jibun || "").trim(),
+          jibun,
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
           parseInt(item.dealDay) || null
@@ -567,6 +571,10 @@ async function ensureRentCached(lawdCd, dealYmd) {
         const monthly = parseInt(String(item.monthlyRent || "0").replace(/,/g, ""));
         const area = parseFloat(item.excluUseAr || 0);
         if (!item.aptNm || !area) continue;
+        // jibun 구성: bonbun(본번) + bubun(부번)
+        const bonbun = String(item.bonbun || "").replace(/^0+/, "").trim();
+        const bubun = String(item.bubun || "").replace(/^0+/, "").trim();
+        const jibun = bonbun ? (bubun && bubun !== "0" ? `${bonbun}-${bubun}` : bonbun) : String(item.jibun || "").trim();
         insert.run(
           lawdCd, dealYmd,
           String(item.aptNm).trim(),
@@ -574,7 +582,7 @@ async function ensureRentCached(lawdCd, dealYmd) {
           parseInt(item.floor) || null,
           parseInt(item.buildYear) || null,
           String(item.umdNm || "").trim(),
-          String(item.jibun || "").trim(),
+          jibun,
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
           parseInt(item.dealDay) || null
