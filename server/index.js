@@ -625,6 +625,28 @@ function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, a
 
   const { where: filterWhere, params: filterParams } = buildFilters();
 
+  // 영문 약어 ↔ 한글 변환 맵 (아파트 이름 매칭용)
+  const ABBR_MAP = [
+    ["SK", "에스케이"], ["LG", "엘지"], ["GS", "지에스"], ["KCC", "케이씨씨"],
+    ["e편한세상", "이편한세상"], ["SKVIEW", "에스케이뷰"], ["VIEW", "뷰"],
+    ["IPARK", "아이파크"], ["Xi", "자이"], ["XI", "자이"],
+  ];
+
+  function normalizeAptName(name) {
+    let n = name.replace(/아파트|단지|APT/gi, "").trim();
+    // 영문→한글 변환 버전도 생성
+    const variants = [n];
+    for (const [eng, kor] of ABBR_MAP) {
+      if (n.toUpperCase().includes(eng.toUpperCase())) {
+        variants.push(n.replace(new RegExp(eng, "gi"), kor));
+      }
+      if (n.includes(kor)) {
+        variants.push(n.replace(new RegExp(kor, "g"), eng));
+      }
+    }
+    return [...new Set(variants)];
+  }
+
   // jibun 기반 매칭 (우선)
   if (umdNm && jibun) {
     const q = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND umd_nm = ? AND jibun = ?${filterWhere}${orderBy}`;
@@ -632,20 +654,28 @@ function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, a
     if (rows.length > 0) return rows;
   }
 
-  // fallback: apt_nm 기반 매칭 (jibun 데이터가 아직 캐시되지 않은 경우)
+  // fallback: apt_nm 기반 매칭 (jibun이 없거나 빈 문자열로 저장된 경우)
   if (aptNm) {
-    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
+    const nameVariants = normalizeAptName(aptNm);
     let umdFilter = umdNm ? " AND umd_nm = ?" : "";
     let umdParams = umdNm ? [umdNm] : [];
-    const exactQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
-    const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...umdParams, ...filterParams);
-    if (exactRows.length > 0) return exactRows;
 
-    const candidateQ = `SELECT DISTINCT apt_nm FROM ${tableName} WHERE lawd_cd = ? AND apt_nm LIKE ?${umdFilter}${filterWhere} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
-    const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...umdParams, ...filterParams);
-    if (!candidate) return [];
-    const matchQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
-    return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...umdParams, ...filterParams);
+    // 1) 정확히 일치하는 이름 (변환 포함)
+    for (const variant of nameVariants) {
+      const exactQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
+      const exactRows = db.prepare(exactQ).all(lawdCd, variant, ...umdParams, ...filterParams);
+      if (exactRows.length > 0) return exactRows;
+    }
+
+    // 2) LIKE 전방 일치 (변환 포함)
+    for (const variant of nameVariants) {
+      const candidateQ = `SELECT DISTINCT apt_nm FROM ${tableName} WHERE lawd_cd = ? AND apt_nm LIKE ?${umdFilter}${filterWhere} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
+      const candidate = db.prepare(candidateQ).get(lawdCd, `${variant}%`, ...umdParams, ...filterParams);
+      if (candidate) {
+        const matchQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
+        return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...umdParams, ...filterParams);
+      }
+    }
   }
 
   return [];
