@@ -57,6 +57,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
   // 전체기간 가격 폴링 ref
   const allTimePollRef = useRef(null);
+  const areaScrollRef = useRef(null);
+  const areaPillLayouts = useRef({});
 
   // 매물 변경 시 상태 리셋
   useEffect(() => {
@@ -317,6 +319,12 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSelectedArea(areaKey);
     setTxExpanded(false);
     updateProp(selectedProp.id, "selectedArea", areaKey);
+
+    // 선택한 평수 pill이 보이도록 스크롤
+    const layout = areaPillLayouts.current[areaKey];
+    if (layout && areaScrollRef.current) {
+      areaScrollRef.current.scrollTo({ x: Math.max(0, layout.x - 20), animated: true });
+    }
     updateProp(selectedProp.id, "selectedAreaGroup", isAll ? null : areaGroup);
     if (!selectedProp.lawdCd) return;
 
@@ -441,7 +449,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             style={[styles.propTab, selectedPropId === p.id && styles.propTabActive]}
           >
             <Text style={[styles.propTabText, selectedPropId === p.id && styles.propTabTextActive]}>
-              {p.name || "이름없음"}
+              {p.name || `매물 ${properties.indexOf(p) + 1}`}
             </Text>
           </TouchableOpacity>
         ))}
@@ -660,9 +668,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           {!dataCollecting && selectedProp.lawdCd && getMergedAreas().length > 0 && (
             <View style={styles.areaSection}>
               <Text style={styles.sectionTitle}>📐 평수 선택</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <ScrollView ref={areaScrollRef} horizontal showsHorizontalScrollIndicator={false}>
                 <TouchableOpacity
                   onPress={() => handleAreaSelect("전체")}
+                  onLayout={e => { areaPillLayouts.current["전체"] = e.nativeEvent.layout; }}
                   style={[styles.areaPill, selectedArea === "전체" && styles.areaPillActive]}
                 >
                   <Text style={[styles.areaPillText, selectedArea === "전체" && styles.areaPillTextActive]}>전체</Text>
@@ -676,6 +685,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     <TouchableOpacity
                       key={key}
                       onPress={() => handleAreaSelect(mg)}
+                      onLayout={e => { areaPillLayouts.current[key] = e.nativeEvent.layout; }}
                       style={[styles.areaPill, selectedArea === key && styles.areaPillActive]}
                     >
                       <Text style={[styles.areaPillText, selectedArea === key && styles.areaPillTextActive]}>
@@ -971,6 +981,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     const isCurrent = n.guNm === (selectedProp.umdNm || "");
                     return (
                       <View key={i} style={[styles.neighborRow, isCurrent && styles.neighborRowCurrent]}>
+                        <Text style={[styles.neighborRank, isCurrent && { color: COLORS.primary }]}>{i + 1}</Text>
                         <Text style={[styles.neighborName, isCurrent && { color: COLORS.primary, fontWeight: "800" }]}>
                           {n.guNm} {isCurrent ? "★" : ""}
                         </Text>
@@ -1155,6 +1166,7 @@ const styles = StyleSheet.create({
   neighborTitle:   { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", marginBottom: 8 },
   neighborRow:     { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, marginBottom: 2 },
   neighborRowCurrent: { backgroundColor: "rgba(99,102,241,0.1)" },
+  neighborRank:    { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", width: 18 },
   neighborName:    { color: COLORS.textMuted, fontSize: 12 },
   neighborAvg:     { color: COLORS.text, fontSize: 12, fontWeight: "700" },
 

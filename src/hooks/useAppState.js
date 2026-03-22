@@ -16,7 +16,7 @@ export default function useAppState() {
   // ── Local state ────────────────────────────────────────────
   const [localCriteria, setLocalCriteria] = useState(DEFAULT_CRITERIA);
   const [localProperties, setLocalProperties] = useState([
-    { id: 1, name: "매물 1", address: "", price: "", scores: {}, memo: "",
+    { id: 1, name: "", address: "", price: "", scores: {}, memo: "",
       lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
       recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
       pricePercentile: null, dongPercentile: null,
@@ -64,8 +64,12 @@ export default function useAppState() {
           const saved = JSON.parse(raw);
           if (saved.criteria) setLocalCriteria(saved.criteria);
           if (saved.properties) {
-            setLocalProperties(saved.properties);
-            const maxId = saved.properties.reduce((m, p) => Math.max(m, p.id), 0);
+            const migrated = saved.properties.map(p => ({
+              ...p,
+              name: /^매물\s*\d+$/.test(p.name) ? "" : p.name,
+            }));
+            setLocalProperties(migrated);
+            const maxId = migrated.reduce((m, p) => Math.max(m, p.id), 0);
             nextPropId.current = maxId + 1;
           }
           if (saved.nextCritId) nextCritId.current = saved.nextCritId;
@@ -268,7 +272,7 @@ export default function useAppState() {
     setLocalProperties(ps => {
       const num = ps.length + 1;
       return [...ps, {
-        id, name: `매물 ${num}`, address: "", price: "", scores: {}, memo: "",
+        id, name: "", address: "", price: "", scores: {}, memo: "",
         lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
         recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
         pricePercentile: null, dongPercentile: null,
