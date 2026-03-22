@@ -13,19 +13,23 @@ export async function getRegionCode(address) {
   return res.json();
 }
 
-export async function getApartmentAreas(aptNm, lawdCd, buildYear, umdNm) {
-  let url = `${SERVER_URL}/api/apartment/areas?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}`;
+export async function getApartmentAreas(aptNm, lawdCd, buildYear, umdNm, jibun) {
+  let url = `${SERVER_URL}/api/apartment/areas?lawdCd=${lawdCd}`;
+  if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
+  if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("평수 조회 실패");
   return res.json();
 }
 
-export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm) {
-  let url = `${SERVER_URL}/api/apartment/transactions?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun) {
+  let url = `${SERVER_URL}/api/apartment/transactions?lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+  if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
+  if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("거래 조회 실패");
   return res.json();
@@ -37,10 +41,12 @@ export async function getRegionalAnalysis(lawdCd, umdNm, area, price, guNm = "")
   return res.json();
 }
 
-export async function getRentTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm) {
-  let url = `${SERVER_URL}/api/apartment/rent?aptNm=${encodeURIComponent(aptNm)}&lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+export async function getRentTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun) {
+  let url = `${SERVER_URL}/api/apartment/rent?lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
+  if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
+  if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("전월세 조회 실패");
   return res.json();

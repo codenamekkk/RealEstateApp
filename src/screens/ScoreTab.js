@@ -93,9 +93,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }
 
-  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId, umdNm) {
+  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId, umdNm, jibun) {
     try {
-      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear, umdNm);
+      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear, umdNm, jibun);
       if (reqId && selectRequestId.current !== reqId) return;
       // area가 "전체"일 때 캐시 저장
       if (area === "전체") {
@@ -210,12 +210,25 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "umdNm", regionData.umdNm);
       updateProp(selectedProp.id, "guNm", regionData.guNm);
 
-      // 평수 목록 + 매매 + 전월세 + 단지정보 모두 병렬 조회
+      // 1단계: complex-info 먼저 조회 (jibun 확보)
+      let complexJibun = null;
+      let complexUmdNm = regionData.umdNm;
+      try {
+        const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd);
+        if (selectRequestId.current !== reqId) return;
+        updateProp(selectedProp.id, "complexInfo", info);
+        complexJibun = info?.jibun || null;
+        complexUmdNm = info?.umdNm || regionData.umdNm;
+      } catch (e) {
+        console.warn("단지 정보 조회 실패:", e.message);
+        updateProp(selectedProp.id, "complexInfo", null);
+      }
+
+      // 2단계: jibun 확보 후 평수 + 거래 + 전월세 병렬 조회
       const [areasResult] = await Promise.allSettled([
-        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, regionData.umdNm),
-        loadTransactionData(item.aptName, regionData.lawdCd, "전체", regionData.umdNm, item.buildYear, regionData.guNm, reqId),
-        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, regionData.umdNm),
-        loadComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, reqId),
+        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, complexUmdNm, complexJibun),
+        loadTransactionData(item.aptName, regionData.lawdCd, "전체", complexUmdNm, item.buildYear, regionData.guNm, reqId, complexJibun),
+        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, complexUmdNm, complexJibun),
       ]);
       if (selectRequestId.current !== reqId) return;
 
@@ -327,9 +340,11 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         }
       } else {
         // 특정 평수: 그룹의 모든 전용면적을 콤마 구분으로 서버에 전달
+        const propJibun = selectedProp.complexInfo?.jibun || null;
+        const propUmdNm = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
         await Promise.allSettled([
-          loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.umdNm, selectedProp.buildYear, selectedProp.guNm),
-          loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, null, selectedProp.umdNm),
+          loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, propUmdNm, selectedProp.buildYear, selectedProp.guNm, null, propJibun),
+          loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, null, propUmdNm, propJibun),
         ]);
       }
     } finally {
@@ -338,10 +353,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   }
 
   // 실거래 데이터 로드 (지역 분석은 별도 비동기)
-  async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear, guNm, reqId) {
+  async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear, guNm, reqId, jibun) {
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
-      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear, umdNm);
+      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear, umdNm, jibun);
       if (reqId && selectRequestId.current !== reqId) return;
 
       // area가 "전체"일 때 캐시 저장
@@ -1120,7 +1135,7 @@ const styles = StyleSheet.create({
   complexRow:         { flexDirection: "row", gap: 8 },
   complexItem:        { flex: 1, backgroundColor: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 10, alignItems: "center" },
   complexLabel:       { color: COLORS.textFaint, fontSize: 10, fontWeight: "600", marginBottom: 4 },
-  complexValue:       { color: COLORS.text, fontSize: 13, fontWeight: "700" },
+  complexValue:       { color: COLORS.text, fontSize: 13, fontWeight: "700", textAlign: "center" },
   complexAreasSection:{ marginTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderFaint, paddingTop: 10 },
   complexAreasTitle:  { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", marginBottom: 8 },
   complexAreasRow:    { flexDirection: "row", flexWrap: "wrap", gap: 6 },

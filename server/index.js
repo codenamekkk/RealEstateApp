@@ -57,6 +57,7 @@ db.exec(`
     floor         INTEGER,
     build_year    INTEGER,
     umd_nm        TEXT,
+    jibun         TEXT DEFAULT '',
     deal_year     INTEGER,
     deal_month    INTEGER,
     deal_day      INTEGER,
@@ -65,8 +66,12 @@ db.exec(`
   )
 `);
 
+// jibun 컬럼이 없으면 추가 (기존 DB 마이그레이션)
+try { db.exec(`ALTER TABLE transaction_cache ADD COLUMN jibun TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_apt ON transaction_cache(lawd_cd, apt_nm)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_ymd ON transaction_cache(lawd_cd, deal_ymd)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_jibun ON transaction_cache(lawd_cd, umd_nm, jibun)`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS api_fetch_log (
@@ -90,6 +95,7 @@ db.exec(`
     floor         INTEGER,
     build_year    INTEGER,
     umd_nm        TEXT,
+    jibun         TEXT DEFAULT '',
     deal_year     INTEGER,
     deal_month    INTEGER,
     deal_day      INTEGER,
@@ -97,8 +103,13 @@ db.exec(`
     UNIQUE(lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, deal_day)
   )
 `);
+
+// jibun 컬럼이 없으면 추가 (기존 DB 마이그레이션)
+try { db.exec(`ALTER TABLE rent_cache ADD COLUMN jibun TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_apt ON rent_cache(lawd_cd, apt_nm)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_ymd ON rent_cache(lawd_cd, deal_ymd)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_jibun ON rent_cache(lawd_cd, umd_nm, jibun)`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS rent_fetch_log (
@@ -396,8 +407,8 @@ async function ensureCached(lawdCd, dealYmd) {
     const items = await fetchMolitData(lawdCd, dealYmd);
     const insert = db.prepare(`
       INSERT OR IGNORE INTO transaction_cache
-      (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tx = db.transaction(() => {
@@ -413,6 +424,7 @@ async function ensureCached(lawdCd, dealYmd) {
           parseInt(item.floor) || null,
           parseInt(item.buildYear) || null,
           String(item.umdNm || "").trim(),
+          String(item.jibun || "").trim(),
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
           parseInt(item.dealDay) || null
@@ -466,8 +478,8 @@ async function ensureRentCached(lawdCd, dealYmd) {
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO rent_cache
-      (lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, build_year, umd_nm, deal_year, deal_month, deal_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tx = db.transaction(() => {
@@ -483,6 +495,7 @@ async function ensureRentCached(lawdCd, dealYmd) {
           parseInt(item.floor) || null,
           parseInt(item.buildYear) || null,
           String(item.umdNm || "").trim(),
+          String(item.jibun || "").trim(),
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
           parseInt(item.dealDay) || null
@@ -505,20 +518,15 @@ async function ensureRentCached(lawdCd, dealYmd) {
 }
 
 /**
- * 엄격한 아파트 이름 매칭 쿼리 실행
- *
- * 1단계: 정확 일치 (cleanName === apt_nm)
- * 2단계: starts-with 후보 중 가장 유사한 이름 하나만 선택하여 해당 이름으로 재조회
- *        → 여러 아파트가 섞이는 것을 방지
- *
- * buildYear, umdNm 필터 항상 함께 적용
+ * 주소(번지) 기반으로 실거래 내역을 조회합니다.
+ * jibun이 있으면: lawd_cd + umd_nm + jibun으로 정확 매칭 (이름 무관)
+ * jibun이 없으면: 기존 apt_nm 기반 매칭 (fallback)
  */
-function queryWithStrictMatch(db, tableName, cleanName, lawdCd, { buildYear, umdNm, area, monthList } = {}, orderBy = "") {
+function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, area, monthList } = {}, orderBy = "") {
   const buildFilters = () => {
     let where = "";
     const params = [];
     if (buildYear) { where += " AND build_year = ?"; params.push(parseInt(buildYear)); }
-    if (umdNm) { where += " AND umd_nm = ?"; params.push(umdNm); }
     if (area && area !== "전체") {
       const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
       if (areaValues.length > 1) {
@@ -538,19 +546,30 @@ function queryWithStrictMatch(db, tableName, cleanName, lawdCd, { buildYear, umd
 
   const { where: filterWhere, params: filterParams } = buildFilters();
 
-  // 1단계: 정확 일치
-  const exactQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${filterWhere}${orderBy}`;
-  const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...filterParams);
-  if (exactRows.length > 0) return exactRows;
+  // jibun 기반 매칭 (우선)
+  if (umdNm && jibun) {
+    const q = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND umd_nm = ? AND jibun = ?${filterWhere}${orderBy}`;
+    const rows = db.prepare(q).all(lawdCd, umdNm, jibun, ...filterParams);
+    if (rows.length > 0) return rows;
+  }
 
-  // 2단계: starts-with 후보 중 가장 짧은 이름(= 가장 유사) 하나만 선택
-  const candidateQ = `SELECT DISTINCT apt_nm FROM ${tableName} WHERE lawd_cd = ? AND apt_nm LIKE ?${filterWhere} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
-  const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...filterParams);
-  if (!candidate) return [];
+  // fallback: apt_nm 기반 매칭 (jibun 데이터가 아직 캐시되지 않은 경우)
+  if (aptNm) {
+    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
+    let umdFilter = umdNm ? " AND umd_nm = ?" : "";
+    let umdParams = umdNm ? [umdNm] : [];
+    const exactQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
+    const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...umdParams, ...filterParams);
+    if (exactRows.length > 0) return exactRows;
 
-  // 선택된 이름으로 정확 재조회 (다른 아파트 데이터 혼입 방지)
-  const matchQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${filterWhere}${orderBy}`;
-  return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...filterParams);
+    const candidateQ = `SELECT DISTINCT apt_nm FROM ${tableName} WHERE lawd_cd = ? AND apt_nm LIKE ?${umdFilter}${filterWhere} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
+    const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...umdParams, ...filterParams);
+    if (!candidate) return [];
+    const matchQ = `SELECT * FROM ${tableName} WHERE lawd_cd = ? AND apt_nm = ?${umdFilter}${filterWhere}${orderBy}`;
+    return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...umdParams, ...filterParams);
+  }
+
+  return [];
 }
 
 function getMonthRange(months) {
@@ -645,16 +664,15 @@ app.get("/api/region-code", (req, res) => {
 
 // ── 아파트 평수 목록 조회 ───────────────────────────────────────────
 app.get("/api/apartment/areas", async (req, res) => {
-  const { aptNm, lawdCd, buildYear, umdNm } = req.query;
-  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  const { aptNm, lawdCd, buildYear, umdNm, jibun } = req.query;
+  if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
     const months = getMonthRange(6);
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
-    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    const rows = queryWithStrictMatch(db, "transaction_cache", cleanName, lawdCd, { buildYear, umdNm }, ` ORDER BY exclu_use_ar`);
+    const rows = queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear }, ` ORDER BY exclu_use_ar`);
 
     // DISTINCT 처리
     const seen = new Set();
@@ -674,8 +692,8 @@ app.get("/api/apartment/areas", async (req, res) => {
 
 // ── 실거래 조회 ─────────────────────────────────────────────────────
 app.get("/api/apartment/transactions", async (req, res) => {
-  const { aptNm, lawdCd, area, months: monthsStr, buildYear, umdNm } = req.query;
-  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  const { aptNm, lawdCd, area, months: monthsStr, buildYear, umdNm, jibun } = req.query;
+  if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
@@ -697,53 +715,9 @@ app.get("/api/apartment/transactions", async (req, res) => {
       await Promise.allSettled(batch.map(ym => ensureCached(lawdCd, ym)));
     }
 
-    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-
-    // 단계별 매칭: 정확 매칭 → starts-with 후보 중 가장 유사한 이름 하나로 재조회
-    const tryMatch = (extraWhere, extraParams, orderBy) => {
-      const baseFilters = [];
-      const baseFilterParams = [];
-
-      if (buildYear) { baseFilters.push("build_year = ?"); baseFilterParams.push(parseInt(buildYear)); }
-      if (umdNm) { baseFilters.push("umd_nm = ?"); baseFilterParams.push(umdNm); }
-
-      const filterStr = baseFilters.length > 0 ? " AND " + baseFilters.join(" AND ") : "";
-
-      // 1단계: 정확 일치
-      const exactQ = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?${filterStr}${extraWhere}${orderBy}`;
-      const exactRows = db.prepare(exactQ).all(lawdCd, cleanName, ...baseFilterParams, ...extraParams);
-      if (exactRows.length > 0) return exactRows;
-
-      // 2단계: starts-with 후보 중 가장 짧은 이름 하나만 선택
-      const candidateQ = `SELECT DISTINCT apt_nm FROM transaction_cache WHERE lawd_cd = ? AND apt_nm LIKE ?${filterStr} ORDER BY LENGTH(apt_nm) ASC LIMIT 1`;
-      const candidate = db.prepare(candidateQ).get(lawdCd, `${cleanName}%`, ...baseFilterParams);
-      if (!candidate) return [];
-
-      // 선택된 이름으로 정확 재조회
-      const matchQ = `SELECT * FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ?${filterStr}${extraWhere}${orderBy}`;
-      return db.prepare(matchQ).all(lawdCd, candidate.apt_nm, ...baseFilterParams, ...extraParams);
-    };
-
-    // 최근 데이터 조회 (month 필터 적용)
-    const monthPlaceholders = ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
-    let areaFilter = "";
-    let areaParams = [];
-    if (area && area !== "전체") {
-      const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
-      if (areaValues.length > 1) {
-        areaFilter = ` AND exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
-        areaParams = areaValues;
-      } else {
-        areaFilter = ` AND exclu_use_ar IN (?)`;
-        areaParams = [areaValues[0]];
-      }
-    }
-
-    const recentExtra = monthPlaceholders + areaFilter;
-    const recentParams = [...monthList, ...areaParams];
+    // 최근 데이터 조회 (queryByJibun 사용)
     const orderBy = ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
-
-    const rows = tryMatch(recentExtra, recentParams, orderBy);
+    const rows = queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear, area, monthList }, orderBy);
 
     // 동별 요약 생성
     const dongMap = {};
@@ -790,10 +764,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
       buildYear: r.build_year,
     }));
 
-    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서, 동일한 단계별 매칭 적용)
-    const allTimeExtra = areaFilter;
-    const allTimeExtraParams = [...areaParams];
-
+    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서)
     const formatRow = (r) => r ? {
       price: r.deal_amount,
       date: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
@@ -802,7 +773,7 @@ app.get("/api/apartment/transactions", async (req, res) => {
       area: r.exclu_use_ar,
     } : null;
 
-    const allTimeRows = tryMatch(allTimeExtra, allTimeExtraParams, ` ORDER BY deal_amount DESC`);
+    const allTimeRows = queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear, area }, ` ORDER BY deal_amount DESC`);
     const allTimeHighest = allTimeRows.length > 0 ? allTimeRows[0] : null;
     const allTimeLowest = allTimeRows.length > 0 ? allTimeRows[allTimeRows.length - 1] : null;
 
@@ -822,8 +793,8 @@ app.get("/api/apartment/transactions", async (req, res) => {
 
 // ── 전월세 실거래 조회 (캐시 기반) ──────────────────────────────────────
 app.get("/api/apartment/rent", async (req, res) => {
-  const { aptNm, lawdCd, area, months = 12, buildYear, umdNm } = req.query;
-  if (!aptNm || !lawdCd) return res.status(400).json({ error: "aptNm, lawdCd 필수" });
+  const { aptNm, lawdCd, area, months = 12, buildYear, umdNm, jibun } = req.query;
+  if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
@@ -832,10 +803,9 @@ app.get("/api/apartment/rent", async (req, res) => {
     // 캐시 확보 (동시성 제어 포함)
     await Promise.all(monthList.map(ym => ensureRentCached(lawdCd, ym)));
 
-    // DB에서 조회 (단계별 매칭: 정확 → starts-with fallback)
-    const cleanName = aptNm.replace(/아파트|단지|APT/gi, "").trim();
-    const rows = queryWithStrictMatch(db, "rent_cache", cleanName, lawdCd,
-      { buildYear, umdNm, area, monthList },
+    // DB에서 조회 (주소 기반 매칭)
+    const rows = queryByJibun(db, "rent_cache", lawdCd,
+      { umdNm, jibun, aptNm, buildYear, area, monthList },
       ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`);
 
     // 전세/월세 분리
@@ -1275,6 +1245,8 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       manageType: null,
       hallType: main?.["현관구조"]?.trim() || null,
       doroJuso: main?.["도로기본주소"] ? `${main["도로기본주소"]} ${main["도로명건물본번"] || ""}`.trim() : null,
+      umdNm: main?.["읍면동명"]?.trim() || null,
+      jibun: main?.["상세번지내용"]?.trim() || null,
     };
 
     console.log(`[COMPLEX] KB 조회 완료: ${aptName} → ${exclusiveAreas.length}개 타입`);
