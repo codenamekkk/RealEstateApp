@@ -997,15 +997,15 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const months = getMonthRange(12);
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
-    // area가 콤마 구분이면 IN, 단일값이면 BETWEEN ±2
+    // area가 콤마 구분이면 IN, 단일값이면 BETWEEN ±5
     const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
     let areaWhere, areaBinds;
     if (areaValues.length > 1) {
       areaWhere = `exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
       areaBinds = areaValues;
     } else {
-      areaWhere = `exclu_use_ar IN (?)`;
-      areaBinds = [areaValues[0]];
+      areaWhere = `exclu_use_ar BETWEEN ? AND ?`;
+      areaBinds = [areaValues[0] - 5, areaValues[0] + 5];
     }
 
     // 구 내 동일 평수 모든 거래
