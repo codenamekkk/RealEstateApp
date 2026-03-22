@@ -376,6 +376,12 @@ async function fetchMolitData(lawdCd, dealYmd, maxRetries = 3) {
       const res = await fetch(url, { timeout: 15000 });
       if (!res.ok) {
         console.warn(`[MOLIT] HTTP 에러: ${res.status} ${res.statusText}`);
+        if (res.status === 429 && attempt < maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 2000; // 2s, 4s, 8s
+          console.log(`[MOLIT] 429 Rate Limit — ${delay}ms 후 재시도...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
         return [];
       }
       const xml = await res.text();
@@ -515,6 +521,12 @@ async function ensureRentCached(lawdCd, dealYmd) {
         const r = await fetch(url, { timeout: 15000 });
         if (!r.ok) {
           console.warn(`[RENT] HTTP 에러: ${r.status} ${r.statusText}`);
+          if (r.status === 429 && attempt < 2) {
+            const delay = Math.pow(2, attempt) * 2000;
+            console.log(`[RENT] 429 Rate Limit — ${delay}ms 후 재시도...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
           break;
         }
         const text = await r.text();
@@ -766,10 +778,10 @@ app.get("/api/apartment/transactions", async (req, res) => {
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
-    // Phase 1: 최근 기간만 즉시 호출
+    // Phase 1: 최근 기간만 즉시 호출 (rate limit 방지: 4개씩 300ms 딜레이)
     const numMonths = parseInt(monthsStr) || 12;
     const monthList = getMonthRange(numMonths);
-    await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
+    await throttledBatchFetch(monthList, lawdCd, ensureCached, { batchSize: 4, delayMs: 300 });
 
     // 최근 데이터 조회 (queryByJibun 사용)
     const orderBy = ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
