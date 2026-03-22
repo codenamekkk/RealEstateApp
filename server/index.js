@@ -365,23 +365,66 @@ app.delete("/api/share-requests/:id", (req, res) => {
 });
 
 // ── 국토교통부 API 연동 ────────────────────────────────────────────
-async function fetchMolitData(lawdCd, dealYmd) {
+const RATE_LIMIT_CODES = new Set(["22", "99"]);
+
+async function fetchMolitData(lawdCd, dealYmd, maxRetries = 3) {
   const url = `http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999&pageNo=1`;
-  console.log("[MOLIT] 요청:", url.replace(MOLIT_API_KEY, "***KEY***"));
-  const res = await fetch(url, { timeout: 15000 });
-  if (!res.ok) {
-    console.warn(`[MOLIT] HTTP 에러: ${res.status} ${res.statusText}`);
-    return [];
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      console.log("[MOLIT] 요청:", url.replace(MOLIT_API_KEY, "***KEY***"), attempt > 0 ? `(재시도 ${attempt})` : "");
+      const res = await fetch(url, { timeout: 15000 });
+      if (!res.ok) {
+        console.warn(`[MOLIT] HTTP 에러: ${res.status} ${res.statusText}`);
+        return [];
+      }
+      const xml = await res.text();
+      console.log("[MOLIT] 응답 상태:", res.status, "길이:", xml.length, "앞부분:", xml.slice(0, 300));
+      const json = xmlParser.parse(xml);
+
+      // resultCode 체크 (rate limit 등 API 에러 감지)
+      const resultCode = String(json?.response?.header?.resultCode || "");
+      if (resultCode && resultCode !== "00") {
+        const resultMsg = json?.response?.header?.resultMsg || "UNKNOWN";
+        console.warn(`[MOLIT] API 에러: ${resultCode} - ${resultMsg}`);
+        if (RATE_LIMIT_CODES.has(resultCode) && attempt < maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+          console.log(`[MOLIT] ${delay}ms 후 재시도...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        return [];
+      }
+
+      const items = json?.response?.body?.items?.item;
+      if (!items) {
+        console.log("[MOLIT] items 없음. 파싱 결과:", JSON.stringify(json).slice(0, 500));
+        return [];
+      }
+      return Array.isArray(items) ? items : [items];
+    } catch (e) {
+      console.warn(`[MOLIT] 요청 실패:`, e.message);
+      if (attempt < maxRetries - 1) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.log(`[MOLIT] ${delay}ms 후 재시도...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return [];
+    }
   }
-  const xml = await res.text();
-  console.log("[MOLIT] 응답 상태:", res.status, "길이:", xml.length, "앞부분:", xml.slice(0, 300));
-  const json = xmlParser.parse(xml);
-  const items = json?.response?.body?.items?.item;
-  if (!items) {
-    console.log("[MOLIT] items 없음. 파싱 결과:", JSON.stringify(json).slice(0, 500));
-    return [];
+  return [];
+}
+
+// 스로틀 배치 호출: batchSize개씩 나눠서 delayMs 간격으로 순차 호출
+async function throttledBatchFetch(months, lawdCd, ensureFn, { batchSize = 5, delayMs = 300 } = {}) {
+  for (let i = 0; i < months.length; i += batchSize) {
+    const batch = months.slice(i, i + batchSize);
+    await Promise.allSettled(batch.map(ym => ensureFn(lawdCd, ym)));
+    if (i + batchSize < months.length) {
+      await new Promise(r => setTimeout(r, delayMs));
+    }
   }
-  return Array.isArray(items) ? items : [items];
 }
 
 // 동시성 제어: 동일 키에 대한 중복 MOLIT 호출 방지
@@ -466,15 +509,39 @@ async function ensureRentCached(lawdCd, dealYmd) {
 
   const promise = (async () => {
     const url = `https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent?serviceKey=${MOLIT_API_KEY}&LAWD_CD=${lawdCd}&DEAL_YMD=${dealYmd}&numOfRows=9999`;
-    const r = await fetch(url, { timeout: 15000 });
-    if (!r.ok) {
-      console.warn(`[RENT] HTTP 에러: ${r.status} ${r.statusText}`);
-      return;
+    let list = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const r = await fetch(url, { timeout: 15000 });
+        if (!r.ok) {
+          console.warn(`[RENT] HTTP 에러: ${r.status} ${r.statusText}`);
+          break;
+        }
+        const text = await r.text();
+        const parsed = xmlParser.parse(text);
+
+        const resultCode = String(parsed?.response?.header?.resultCode || "");
+        if (resultCode && resultCode !== "00") {
+          console.warn(`[RENT] API 에러: ${resultCode} - ${parsed?.response?.header?.resultMsg}`);
+          if (RATE_LIMIT_CODES.has(resultCode) && attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+            continue;
+          }
+          break;
+        }
+
+        const items = parsed?.response?.body?.items?.item;
+        list = !items ? [] : Array.isArray(items) ? items : [items];
+        break;
+      } catch (e) {
+        console.warn(`[RENT] 요청 실패:`, e.message);
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+          continue;
+        }
+        break;
+      }
     }
-    const text = await r.text();
-    const parsed = xmlParser.parse(text);
-    const items = parsed?.response?.body?.items?.item;
-    const list = !items ? [] : Array.isArray(items) ? items : [items];
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO rent_cache
@@ -690,30 +757,19 @@ app.get("/api/apartment/areas", async (req, res) => {
   }
 });
 
-// ── 실거래 조회 ─────────────────────────────────────────────────────
+// ── 실거래 조회 (Phase 1: 즉시 응답 + Phase 2: 백그라운드 전체기간 캐싱) ──
+const _backgroundJobs = new Map(); // 전체기간 백그라운드 캐싱 진행 상태
+
 app.get("/api/apartment/transactions", async (req, res) => {
   const { aptNm, lawdCd, area, months: monthsStr, buildYear, umdNm, jibun } = req.query;
   if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
   if (!MOLIT_API_KEY) return res.status(503).json({ error: "국토교통부 API 키 미설정" });
 
   try {
+    // Phase 1: 최근 기간만 즉시 호출
     const numMonths = parseInt(monthsStr) || 12;
     const monthList = getMonthRange(numMonths);
     await Promise.all(monthList.map(ym => ensureCached(lawdCd, ym)));
-
-    // 전체기간 데이터를 위해 추가 캐시 확보 (완료 대기 후 쿼리 실행)
-    // 국토교통부 API는 2006년부터 데이터 제공 → 2006년 1월까지 조회
-    const apiStartYear = 2006;
-    const maxMonths = (new Date().getFullYear() - apiStartYear) * 12 + new Date().getMonth() + 1;
-    const allTimeMonthCount = buildYear
-      ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, maxMonths)
-      : maxMonths;
-    const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
-    // 메모리 폭증 방지: 30개씩 나눠서 순차 호출
-    for (let i = 0; i < allTimeMonths.length; i += 30) {
-      const batch = allTimeMonths.slice(i, i + 30);
-      await Promise.allSettled(batch.map(ym => ensureCached(lawdCd, ym)));
-    }
 
     // 최근 데이터 조회 (queryByJibun 사용)
     const orderBy = ` ORDER BY deal_year DESC, deal_month DESC, deal_day DESC`;
@@ -764,7 +820,61 @@ app.get("/api/apartment/transactions", async (req, res) => {
       buildYear: r.build_year,
     }));
 
-    // 전체기간 최고/최저가 조회 (캐시된 전체 데이터에서)
+    // 즉시 응답 (allTimePriceRange는 null — 백그라운드에서 캐싱 후 별도 조회)
+    res.json({
+      transactions,
+      dongSummary: Object.values(dongMap),
+      allTimePriceRange: null,
+    });
+
+    // Phase 2: 전체기간 데이터 백그라운드 캐싱 (응답 이후 비동기)
+    const apiStartYear = 2006;
+    const maxMonths = (new Date().getFullYear() - apiStartYear) * 12 + new Date().getMonth() + 1;
+    const allTimeMonthCount = buildYear
+      ? Math.min((new Date().getFullYear() - parseInt(buildYear)) * 12 + 12, maxMonths)
+      : maxMonths;
+    const allTimeMonths = getMonthRange(allTimeMonthCount).filter(m => !monthList.includes(m));
+
+    const jobKey = `${lawdCd}_${umdNm || ""}_${jibun || ""}`;
+    if (allTimeMonths.length > 0 && (!_backgroundJobs.has(jobKey) || _backgroundJobs.get(jobKey).status !== "running")) {
+      _backgroundJobs.set(jobKey, { status: "running" });
+      (async () => {
+        try {
+          await throttledBatchFetch(allTimeMonths, lawdCd, ensureCached, { batchSize: 5, delayMs: 300 });
+          _backgroundJobs.set(jobKey, { status: "done", completedAt: Date.now() });
+          console.log(`[BACKGROUND] 전체기간 캐싱 완료: ${jobKey} (${allTimeMonths.length}개월)`);
+        } catch (e) {
+          _backgroundJobs.set(jobKey, { status: "error", error: e.message });
+          console.error(`[BACKGROUND] 전체기간 캐싱 실패: ${jobKey}`, e.message);
+        }
+      })();
+    }
+  } catch (e) {
+    console.error("실거래 조회 실패:", e.message, e.stack);
+    res.status(500).json({ error: "실거래 조회 실패", detail: e.message });
+  }
+});
+
+// ── 전체기간 최고/최저가 조회 (백그라운드 캐싱 완료 후 폴링) ────────────
+app.get("/api/apartment/alltime-price-range", async (req, res) => {
+  const { lawdCd, aptNm, area, buildYear, umdNm, jibun } = req.query;
+  if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
+
+  try {
+    const jobKey = `${lawdCd}_${umdNm || ""}_${jibun || ""}`;
+    const job = _backgroundJobs.get(jobKey);
+
+    // 백그라운드 작업이 아직 진행 중이면 loading 반환
+    if (job && job.status === "running") {
+      return res.json({ status: "loading" });
+    }
+
+    // 에러 발생 시
+    if (job && job.status === "error") {
+      return res.json({ status: "error", message: job.error });
+    }
+
+    // 완료 또는 이전 세션에서 이미 캐시된 경우 — DB에서 직접 조회
     const formatRow = (r) => r ? {
       price: r.deal_amount,
       date: `${r.deal_year}.${String(r.deal_month).padStart(2, "0")}.${String(r.deal_day).padStart(2, "0")}`,
@@ -778,16 +888,15 @@ app.get("/api/apartment/transactions", async (req, res) => {
     const allTimeLowest = allTimeRows.length > 0 ? allTimeRows[allTimeRows.length - 1] : null;
 
     res.json({
-      transactions,
-      dongSummary: Object.values(dongMap),
+      status: "done",
       allTimePriceRange: {
         highest: formatRow(allTimeHighest),
         lowest: formatRow(allTimeLowest),
       },
     });
   } catch (e) {
-    console.error("실거래 조회 실패:", e.message, e.stack);
-    res.status(500).json({ error: "실거래 조회 실패", detail: e.message });
+    console.error("전체기간 가격 조회 실패:", e.message);
+    res.status(500).json({ status: "error", message: e.message });
   }
 });
 
@@ -800,8 +909,8 @@ app.get("/api/apartment/rent", async (req, res) => {
   try {
     const monthList = getMonthRange(parseInt(months));
 
-    // 캐시 확보 (동시성 제어 포함)
-    await Promise.all(monthList.map(ym => ensureRentCached(lawdCd, ym)));
+    // 캐시 확보 (rate limit 방지: 5개씩 300ms 딜레이)
+    await throttledBatchFetch(monthList, lawdCd, ensureRentCached, { batchSize: 5, delayMs: 300 });
 
     // DB에서 조회 (주소 기반 매칭)
     const rows = queryByJibun(db, "rent_cache", lawdCd,

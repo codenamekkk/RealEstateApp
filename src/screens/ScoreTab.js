@@ -5,7 +5,7 @@ import {
   TextInput, StyleSheet, ActivityIndicator, FlatList,
 } from "react-native";
 import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice } from "../constants";
-import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRentTransactions, getRegionalAnalysis, getComplexInfo } from "../services/apartmentApi";
+import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRentTransactions, getRegionalAnalysis, getComplexInfo, getAllTimePriceRange } from "../services/apartmentApi";
 
 function ScoreButton({ value, selected, onPress, color }) {
   const isHalf = value % 1 !== 0;
@@ -55,12 +55,16 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   // 전체 데이터 캐시 (평수 변경 시 클라이언트 필터링용)
   const allDataCache = useRef({ transactions: null, rent: null });
 
+  // 전체기간 가격 폴링 ref
+  const allTimePollRef = useRef(null);
+
   // 매물 변경 시 상태 리셋
   useEffect(() => {
     setShowDropdown(false);
     setSearchResults([]);
     setTxExpanded(false);
     allDataCache.current = { transactions: null, rent: null };
+    if (allTimePollRef.current) { clearInterval(allTimePollRef.current); allTimePollRef.current = null; }
     if (selectedProp?.lawdCd) {
       // 이미 검색된 매물이면 평수 목록 복원
       loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, selectedProp.umdNm);
@@ -329,9 +333,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             updateProp(selectedProp.id, "recentPrice", Math.max(...cachedTx.dongSummary.map(d => d.recentPrice)));
             updateProp(selectedProp.id, "highestPrice", Math.max(...cachedTx.dongSummary.map(d => d.highestPrice)));
             updateProp(selectedProp.id, "lowestPrice", Math.min(...cachedTx.dongSummary.map(d => d.lowestPrice)));
-            if (cachedTx.allTimePriceRange) {
-              updateProp(selectedProp.id, "allTimePriceRange", cachedTx.allTimePriceRange);
-            }
+            // allTimePriceRange는 폴링으로 별도 관리되므로 기존 값 유지 (덮어쓰지 않음)
           }
         }
         if (cachedRent) {
@@ -380,10 +382,26 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         updateProp(selectedProp.id, "lowestPrice", lowestPrice);
       }
 
-      // 전체기간 최고/최저가 저장
-      if (data.allTimePriceRange) {
-        updateProp(selectedProp.id, "allTimePriceRange", data.allTimePriceRange);
-      }
+      // 전체기간 최고/최저가: 백그라운드 캐싱 완료 후 폴링으로 조회
+      updateProp(selectedProp.id, "allTimePriceRange", null);
+      if (allTimePollRef.current) clearInterval(allTimePollRef.current);
+      const propId = selectedProp.id;
+      allTimePollRef.current = setInterval(async () => {
+        try {
+          if (reqId && selectRequestId.current !== reqId) {
+            clearInterval(allTimePollRef.current); allTimePollRef.current = null; return;
+          }
+          const result = await getAllTimePriceRange(lawdCd, aptNm, areaParam, buildYear, umdNm, jibun);
+          if (result.status === "done" && result.allTimePriceRange) {
+            updateProp(propId, "allTimePriceRange", result.allTimePriceRange);
+            clearInterval(allTimePollRef.current); allTimePollRef.current = null;
+          } else if (result.status === "error") {
+            clearInterval(allTimePollRef.current); allTimePollRef.current = null;
+          }
+        } catch {
+          clearInterval(allTimePollRef.current); allTimePollRef.current = null;
+        }
+      }, 3000);
 
       // 지역 시세 분석 (fire-and-forget: 매매 데이터 먼저 표시, 분석은 백그라운드)
       if (data.dongSummary && data.dongSummary.length > 0) {
@@ -825,6 +843,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             const recentHighest = ds.reduce((max, d) => d.highestPrice > max.highestPrice ? d : max, ds[0]);
             const recentLowest = ds.reduce((min, d) => d.lowestPrice < min.lowestPrice ? d : min, ds[0]);
             const allTime = selectedProp.allTimePriceRange;
+            const isAllTimeLoading = priceRangeTab === "전체기간" && !allTime?.highest;
             const isAllTime = priceRangeTab === "전체기간" && allTime?.highest && allTime?.lowest;
             const highest = isAllTime
               ? { price: allTime.highest.price, date: allTime.highest.date, dong: allTime.highest.dong, floor: allTime.highest.floor, area: allTime.highest.area }
@@ -847,6 +866,13 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     </TouchableOpacity>
                   ))}
                 </View>
+                {isAllTimeLoading ? (
+                  <View style={{ alignItems: "center", paddingVertical: 24 }}>
+                    <ActivityIndicator size="small" color="#6366f1" />
+                    <Text style={{ color: "#6b7280", marginTop: 8, fontSize: 13 }}>전체 기간 거래가 조회 중...</Text>
+                  </View>
+                ) : (
+                <>
                 <View style={styles.priceRangeRow}>
                   <View style={[styles.priceRangeCard, { borderColor: "rgba(245,158,11,0.3)", backgroundColor: "rgba(245,158,11,0.08)" }]}>
                     <Text style={[styles.priceRangeLabel, { color: "#f59e0b" }]}>최고 거래가</Text>
@@ -865,6 +891,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   <Text style={styles.priceGapLabel}>가격 변동폭</Text>
                   <Text style={styles.priceGapValue}>{formatPrice(gap)}</Text>
                 </View>
+                </>
+                )}
               </View>
             );
           })()}
