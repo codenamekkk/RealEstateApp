@@ -671,45 +671,82 @@ function getMonthRange(months) {
   return result;
 }
 
-// ── 아파트 검색 (한국부동산원 API) ───────────────────────────────────
+// ── 주소 판별 함수 ──────────────────────────────────────────────────
+function isAddressQuery(query) {
+  if (/[로길]\s*\d/.test(query) || /대로\s*\d/.test(query)) return true;
+  if (/[동리읍면]\s+\d+(-\d+)?\s*$/.test(query)) return true;
+  if (/\d+-\d+/.test(query) && /[가-힣]/.test(query)) return true;
+  return false;
+}
+
+// ── JUSO 주소 검색 함수 ─────────────────────────────────────────────
+async function searchJusoAddress(query) {
+  if (!JUSO_API_KEY) return [];
+  const url = `https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${encodeURIComponent(JUSO_API_KEY)}&keyword=${encodeURIComponent(query)}&resultType=json&countPerPage=10&currentPage=1`;
+  const res = await fetch(url, { timeout: 5000 });
+  const data = await res.json();
+  const jusoList = data?.results?.juso || [];
+  return jusoList
+    .filter(j => j.bdNm && j.bdNm.trim())
+    .map(j => ({
+      aptName: j.bdNm.trim(),
+      address: `${j.sggNm} ${j.emdNm}`,
+      buildYear: null, units: null, buildings: null,
+    }));
+}
+
+// ── KB 이름 검색 함수 ───────────────────────────────────────────────
+async function searchKBName(query) {
+  if (!KB_TOKEN) return [];
+  const kbRes = await fetchKB("/land-complex/serch/autoKywrSerch", {
+    "컬렉션설정명": "COL_AT_JUSO:100;COL_AT_SCHOOL:100;COL_AT_SUBWAY:100;COL_AT_HSCM:100;COL_AT_VILLA:100",
+    "검색키워드": query,
+  });
+  const hscm = kbRes?.data?.[0]?.COL_AT_HSCM || [];
+  return hscm
+    .filter(item => (item.text || "").trim())
+    .map(item => ({
+      aptName: (item.text || "").trim(),
+      address: (item.addr || "").trim(),
+      buildYear: null, units: null, buildings: null,
+    }));
+}
+
+// ── 아파트 검색 (KB + JUSO 통합) ────────────────────────────────────
 app.get("/api/search/apartment", async (req, res) => {
   const { query } = req.query;
   if (!query || query.length < 2) return res.json([]);
-  if (!KB_TOKEN) return res.status(503).json({ error: "KB_TOKEN 미설정" });
 
   try {
-    // KB 자동완성 검색 (이름으로 전국 검색)
-    const params = new URLSearchParams();
-    params.set("컬렉션설정명", "COL_AT_JUSO:100;COL_AT_SCHOOL:100;COL_AT_SUBWAY:100;COL_AT_HSCM:100;COL_AT_VILLA:100");
-    params.set("검색키워드", query);
+    let kbResults = [], jusoResults = [];
 
-    const kbRes = await fetchKB("/land-complex/serch/autoKywrSerch", {
-      "컬렉션설정명": "COL_AT_JUSO:100;COL_AT_SCHOOL:100;COL_AT_SUBWAY:100;COL_AT_HSCM:100;COL_AT_VILLA:100",
-      "검색키워드": query,
-    });
-    const hscm = kbRes?.data?.[0]?.COL_AT_HSCM || [];
+    if (isAddressQuery(query)) {
+      // 주소 검색: JUSO + KB 병렬 호출
+      const [jusoRes, kbRes] = await Promise.allSettled([
+        searchJusoAddress(query),
+        searchKBName(query),
+      ]);
+      jusoResults = jusoRes.status === "fulfilled" ? jusoRes.value : [];
+      kbResults = kbRes.status === "fulfilled" ? kbRes.value : [];
+    } else {
+      // 이름 검색: KB만 호출
+      kbResults = await searchKBName(query);
+    }
 
+    // 병합 + 중복 제거
     const results = [];
     const seen = new Set();
-    for (const item of hscm) {
-      const name = (item.text || "").trim();
-      const addr = (item.addr || "").trim();
-      const key = `${name}_${addr}`;
-      if (seen.has(key) || !name) continue;
+    for (const item of [...jusoResults, ...kbResults]) {
+      const key = `${item.aptName}_${item.address}`;
+      if (seen.has(key)) continue;
       seen.add(key);
-      results.push({
-        aptName: name,
-        address: addr,
-        buildYear: null,
-        units: null,
-        buildings: null,
-      });
+      results.push(item);
       if (results.length >= 20) break;
     }
 
     res.json(results);
   } catch (e) {
-    console.error("KB 검색 실패:", e.message);
+    console.error("검색 실패:", e.message);
     res.status(500).json({ error: "검색 서비스 오류" });
   }
 });

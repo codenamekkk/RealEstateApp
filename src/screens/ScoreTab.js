@@ -77,6 +77,19 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }, [selectedPropId]);
 
+  // 앱 재접속 시 선택한 평수 pill로 스크롤 복원
+  useEffect(() => {
+    if (selectedArea && selectedArea !== "전체" && areaScrollRef.current) {
+      const timer = setTimeout(() => {
+        const layout = areaPillLayouts.current[selectedArea];
+        if (layout) {
+          areaScrollRef.current.scrollTo({ x: Math.max(0, layout.x - 20), animated: false });
+        }
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedArea, areas]);
+
   async function loadAreas(aptNm, lawdCd, buildYear, umdNm) {
     try {
       const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear, umdNm);
@@ -1167,7 +1180,7 @@ const styles = StyleSheet.create({
   neighborRow:     { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, marginBottom: 2 },
   neighborRowCurrent: { backgroundColor: "rgba(99,102,241,0.1)" },
   neighborRank:    { color: COLORS.textFaint, fontSize: 11, fontWeight: "700", width: 18 },
-  neighborName:    { color: COLORS.textMuted, fontSize: 12 },
+  neighborName:    { color: COLORS.textMuted, fontSize: 12, flex: 1 },
   neighborAvg:     { color: COLORS.text, fontSize: 12, fontWeight: "700" },
 
   // 건축물대장 단지 정보
