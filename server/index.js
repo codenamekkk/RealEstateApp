@@ -1168,37 +1168,125 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
 const BUILDING_API_URL = "http://apis.data.go.kr/1613000/BldRgstHubService";
 
 /**
- * JUSO API로 아파트명 + 주소에서 상세 주소정보 추출
+ * JUSO API 호출 헬퍼
  */
-async function resolveAddressFromJuso(aptName, address) {
-  if (!JUSO_API_KEY) return null;
-  const keyword = `${address} ${aptName}`.trim();
+async function searchJusoAPI(keyword) {
+  if (!JUSO_API_KEY || !keyword) return [];
   const url = `https://business.juso.go.kr/addrlink/addrLinkApi.do?confmKey=${encodeURIComponent(JUSO_API_KEY)}&keyword=${encodeURIComponent(keyword)}&resultType=json&countPerPage=10&currentPage=1`;
   const res = await fetch(url, { timeout: 5000 });
   const data = await res.json();
-  const jusoList = data?.results?.juso || [];
-  if (!jusoList.length) return null;
+  return data?.results?.juso || [];
+}
 
-  // aptName과 가장 일치하는 결과 선택
+/**
+ * JUSO 결과를 파싱하여 주소정보 객체로 변환
+ */
+function parseJusoResult(j) {
+  const bun = (j.lnbrMnnm || "").padStart(4, "0");
+  const ji = (j.lnbrSlno || "0").padStart(4, "0");
+  return {
+    sigunguCd: j.admCd?.substring(0, 5) || "",
+    bjdongCd: j.admCd?.substring(5, 10) || "",
+    bun, ji,
+    umdNm: (j.emdNm || "").trim(),
+    jibun: ji === "0000" ? bun.replace(/^0+/, "") : `${bun.replace(/^0+/, "")}-${ji.replace(/^0+/, "")}`,
+    doroJuso: (j.roadAddr || "").trim(),
+    bdNm: (j.bdNm || "").trim(),
+  };
+}
+
+/**
+ * 아파트 주소정보 확보 (다단계 전략)
+ * 1) 실거래 캐시에서 번지 확보 → JUSO로 상세 주소 조회
+ * 2) 주소+아파트명으로 JUSO 직접 검색
+ * 3) 동 이름만으로 JUSO 검색 + region_codes에서 코드 매칭
+ */
+async function resolveAddressFromJuso(aptName, address, lawdCd) {
   const normalize = s => (s || "").replace(/[\s()（）\-·,.·]/g, "").toLowerCase();
   const target = normalize(aptName);
-  let best = jusoList[0];
-  for (const j of jusoList) {
-    if (normalize(j.bdNm) === target) { best = j; break; }
-    if (normalize(j.bdNm).includes(target) || target.includes(normalize(j.bdNm))) { best = j; }
+
+  // 전략 1: 실거래 캐시에서 해당 아파트의 번지를 찾아 JUSO 검색
+  if (lawdCd) {
+    try {
+      const cached = db.prepare(
+        "SELECT umd_nm, jibun FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ? AND jibun != '' LIMIT 1"
+      ).get(lawdCd, aptName);
+      if (cached?.umd_nm && cached?.jibun) {
+        const guRow = db.prepare("SELECT sido_nm, gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
+        if (guRow) {
+          const keyword = `${guRow.sido_nm || ""} ${guRow.gu_nm} ${cached.umd_nm} ${cached.jibun}`.trim();
+          const jusoList = await searchJusoAPI(keyword);
+          if (jusoList.length > 0) {
+            console.log(`[JUSO] 전략1 성공: 실거래 캐시 → "${keyword}"`);
+            return parseJusoResult(jusoList[0]);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[JUSO] 전략1 실패:", e.message);
+    }
   }
 
-  const bun = (best.lnbrMnnm || "").padStart(4, "0");
-  const ji = (best.lnbrSlno || "0").padStart(4, "0");
-  return {
-    sigunguCd: best.admCd?.substring(0, 5) || "",
-    bjdongCd: best.admCd?.substring(5, 10) || "",
-    bun, ji,
-    umdNm: (best.emdNm || "").trim(),
-    jibun: ji === "0000" ? bun.replace(/^0+/, "") : `${bun.replace(/^0+/, "")}-${ji.replace(/^0+/, "")}`,
-    doroJuso: (best.roadAddr || "").trim(),
-    bdNm: (best.bdNm || "").trim(),
-  };
+  // 전략 2: 주소+아파트명으로 JUSO 직접 검색
+  const keywords = [
+    `${address} ${aptName}`,
+    aptName,
+  ];
+  for (const kw of keywords) {
+    const jusoList = await searchJusoAPI(kw.trim());
+    if (jusoList.length > 0) {
+      // aptName과 가장 일치하는 결과 선택
+      let best = jusoList[0];
+      for (const j of jusoList) {
+        if (normalize(j.bdNm) === target) { best = j; break; }
+        if (normalize(j.bdNm).includes(target) || target.includes(normalize(j.bdNm))) { best = j; }
+      }
+      if (best.bdNm) {
+        console.log(`[JUSO] 전략2 성공: "${kw}" → ${best.bdNm}`);
+        return parseJusoResult(best);
+      }
+    }
+  }
+
+  // 전략 3: 동 이름으로 JUSO 검색하여 admCd만 확보 + 실거래 데이터에서 번지 추출
+  if (lawdCd && address) {
+    try {
+      const parts = address.split(/\s+/);
+      const dongPart = parts.find(p => /[동리읍면]$/.test(p));
+      const guPart = parts.find(p => /[구군]$/.test(p));
+      if (dongPart) {
+        const guRow = db.prepare("SELECT sido_nm, gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
+        const searchAddr = `${guRow?.sido_nm || ""} ${guPart || guRow?.gu_nm || ""} ${dongPart}`.trim();
+        const jusoList = await searchJusoAPI(searchAddr);
+        if (jusoList.length > 0) {
+          const admCd = jusoList[0].admCd || "";
+          console.log(`[JUSO] 전략3: 동 검색으로 admCd 확보 → ${admCd}`);
+
+          // 실거래 캐시에서 번지 추출
+          const txRow = db.prepare(
+            "SELECT jibun FROM transaction_cache WHERE lawd_cd = ? AND apt_nm = ? AND jibun != '' LIMIT 1"
+          ).get(lawdCd, aptName);
+
+          const bun = txRow?.jibun ? txRow.jibun.split("-")[0].padStart(4, "0") : "0000";
+          const ji = txRow?.jibun?.includes("-") ? txRow.jibun.split("-")[1].padStart(4, "0") : "0000";
+
+          return {
+            sigunguCd: admCd.substring(0, 5),
+            bjdongCd: admCd.substring(5, 10),
+            bun, ji,
+            umdNm: dongPart,
+            jibun: txRow?.jibun || "",
+            doroJuso: "",
+            bdNm: aptName,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("[JUSO] 전략3 실패:", e.message);
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -1511,7 +1599,7 @@ app.get("/api/apartment/complex-info", async (req, res) => {
 
   try {
     // 1단계: JUSO API로 주소 상세정보 확보
-    const addrInfo = await resolveAddressFromJuso(aptName, address || "");
+    const addrInfo = await resolveAddressFromJuso(aptName, address || "", lawdCd);
     if (!addrInfo || !addrInfo.sigunguCd || !addrInfo.bjdongCd) {
       return res.status(404).json({ error: `주소를 확인할 수 없습니다: ${aptName}` });
     }
