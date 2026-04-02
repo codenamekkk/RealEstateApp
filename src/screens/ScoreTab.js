@@ -229,24 +229,48 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       updateProp(selectedProp.id, "umdNm", regionData.umdNm);
       updateProp(selectedProp.id, "guNm", regionData.guNm);
 
-      // 1단계: complex-info 먼저 조회 (jibun 확보)
-      let complexJibun = null;
+      // 1단계: 실거래 데이터 먼저 조회 (jibun 확보)
+      let txJibun = null;
+      try {
+        const txData = await getTransactions(item.aptName, regionData.lawdCd, "전체", 12, item.buildYear, regionData.umdNm);
+        if (selectRequestId.current !== reqId) return;
+        if (txData?.transactions?.length > 0) {
+          // 서버에서 jibun을 캐시에 저장했으므로, 이제 complex-info에서 활용 가능
+          txJibun = txData._jibun || null;
+        }
+        // 거래 데이터 즉시 반영
+        allDataCache.current.transactions = txData;
+        if (txData.transactions?.length > 0) {
+          const latest = txData.transactions[0];
+          updateProp(selectedProp.id, "recentPrice", latest.dealAmount);
+          const highest = [...txData.transactions].sort((a, b) => b.dealAmount - a.dealAmount)[0];
+          updateProp(selectedProp.id, "highestPrice", highest?.dealAmount || null);
+          const lowest = [...txData.transactions].sort((a, b) => a.dealAmount - b.dealAmount)[0];
+          updateProp(selectedProp.id, "lowestPrice", lowest?.dealAmount || null);
+        }
+        if (txData.dongSummary) updateProp(selectedProp.id, "dongSummary", txData.dongSummary);
+        if (txData.transactionHistory) updateProp(selectedProp.id, "transactionHistory", txData.transactionHistory);
+      } catch (e) {
+        console.warn("실거래 선 조회 실패:", e.message);
+      }
+
+      // 2단계: complex-info 조회 (jibun 전달로 정확한 매칭)
+      let complexJibun = txJibun;
       let complexUmdNm = regionData.umdNm;
       try {
-        const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd);
+        const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, txJibun);
         if (selectRequestId.current !== reqId) return;
         updateProp(selectedProp.id, "complexInfo", info);
-        complexJibun = info?.jibun || null;
+        complexJibun = info?.jibun || txJibun;
         complexUmdNm = info?.umdNm || regionData.umdNm;
       } catch (e) {
         console.warn("단지 정보 조회 실패:", e.message);
         updateProp(selectedProp.id, "complexInfo", null);
       }
 
-      // 2단계: jibun 확보 후 평수 + 거래 + 전월세 병렬 조회
+      // 3단계: 평수 + 전월세 병렬 조회
       const [areasResult] = await Promise.allSettled([
         getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, complexUmdNm, complexJibun),
-        loadTransactionData(item.aptName, regionData.lawdCd, "전체", complexUmdNm, item.buildYear, regionData.guNm, reqId, complexJibun),
         loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, complexUmdNm, complexJibun),
       ]);
       if (selectRequestId.current !== reqId) return;

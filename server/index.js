@@ -890,11 +890,19 @@ app.get("/api/apartment/transactions", async (req, res) => {
       buildYear: r.build_year,
     }));
 
+    // 실거래에서 확보한 jibun 반환 (complex-info에서 활용)
+    let resolvedJibun = jibun || null;
+    if (!resolvedJibun && rows.length > 0) {
+      const jibunRow = rows.find(r => r.jibun && r.jibun.trim());
+      if (jibunRow) resolvedJibun = jibunRow.jibun.trim();
+    }
+
     // 즉시 응답 (allTimePriceRange는 null — 백그라운드에서 캐싱 후 별도 조회)
     res.json({
       transactions,
       dongSummary: Object.values(dongMap),
       allTimePriceRange: null,
+      _jibun: resolvedJibun,
     });
 
     // Phase 2: 전체기간 데이터 백그라운드 캐싱 (응답 이후 비동기)
@@ -1607,12 +1615,28 @@ async function findKBComplexSerial(lawdCd, aptName) {
 
 // ── 단지 정보 조회 엔드포인트 (공공 API 기반 + KB 보강) ─────────────
 app.get("/api/apartment/complex-info", async (req, res) => {
-  const { lawdCd, address, aptName } = req.query;
+  const { lawdCd, address, aptName, jibun: reqJibun } = req.query;
   if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
 
   try {
-    // 1단계: JUSO API로 주소 상세정보 확보
-    const addrInfo = await resolveAddressFromJuso(aptName, address || "", lawdCd);
+    // 1단계: 주소 상세정보 확보
+    // jibun이 전달되면 해당 번지로 직접 JUSO 검색 (정확도 높음)
+    let addrInfo = null;
+    if (reqJibun && address) {
+      const parts = address.split(/\s+/);
+      const dongPart = parts.find(p => /[동리읍면]$/.test(p));
+      const guPart = parts.find(p => /[구군]$/.test(p));
+      const guRow = db.prepare("SELECT sido_nm, gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
+      const keyword = `${guRow?.sido_nm || ""} ${guPart || guRow?.gu_nm || ""} ${dongPart || ""} ${reqJibun}`.trim();
+      const jusoList = await searchJusoAPI(keyword);
+      if (jusoList.length > 0) {
+        addrInfo = parseJusoResult(jusoList[0]);
+        console.log(`[JUSO] jibun 직접 검색 성공: "${keyword}"`);
+      }
+    }
+    if (!addrInfo) {
+      addrInfo = await resolveAddressFromJuso(aptName, address || "", lawdCd);
+    }
     if (!addrInfo || !addrInfo.sigunguCd || !addrInfo.bjdongCd) {
       return res.status(404).json({ error: `주소를 확인할 수 없습니다: ${aptName}` });
     }
