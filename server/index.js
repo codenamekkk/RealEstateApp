@@ -174,6 +174,7 @@ if (regionCount.cnt === 0) {
 // ── API 키 ───────────────────────────────────────────────────────
 const MOLIT_API_KEY = process.env.MOLIT_API_KEY || "";
 const JUSO_API_KEY = process.env.JUSO_API_KEY || "";
+const BUILDING_API_KEY = process.env.BUILDING_API_KEY || "";
 const KB_TOKEN = process.env.KB_TOKEN || "";
 const KB_BASE_URL = "https://api.kbland.kr";
 
@@ -1165,7 +1166,7 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
 
 // ── 건축물대장 API (공공데이터포털) ──────────────────────────────────
 
-const BUILDING_API_URL = "http://apis.data.go.kr/1613000/BldRgstHubService";
+const BUILDING_API_URL = "https://apis.data.go.kr/1613000/BldRgstHubService";
 
 /**
  * JUSO API 호출 헬퍼
@@ -1293,7 +1294,7 @@ async function resolveAddressFromJuso(aptName, address, lawdCd) {
  * 건축물대장 총괄표제부 조회
  */
 async function fetchBuildingSummary(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_URL}/getBrRecapTitleInfo?serviceKey=${encodeURIComponent(MOLIT_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1`;
+  const url = `${BUILDING_API_URL}/getBrRecapTitleInfo?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1`;
   const res = await fetch(url, { timeout: 10000 });
   const text = await res.text();
   // XML 파싱
@@ -1305,7 +1306,7 @@ async function fetchBuildingSummary(sigunguCd, bjdongCd, bun, ji) {
  * 건축물대장 기본개요 조회
  */
 async function fetchBuildingDetail(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_URL}/getBrBasisOulnInfo?serviceKey=${encodeURIComponent(MOLIT_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1`;
+  const url = `${BUILDING_API_URL}/getBrBasisOulnInfo?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=100&pageNo=1`;
   const res = await fetch(url, { timeout: 10000 });
   const text = await res.text();
   return parseXmlItems(text);
@@ -1315,7 +1316,7 @@ async function fetchBuildingDetail(sigunguCd, bjdongCd, bun, ji) {
  * 건축물대장 전유공용면적 조회
  */
 async function fetchBuildingAreaInfo(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_URL}/getBrExposPubuseAreaInfo?serviceKey=${encodeURIComponent(MOLIT_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=9999&pageNo=1`;
+  const url = `${BUILDING_API_URL}/getBrExposPubuseAreaInfo?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=9999&pageNo=1`;
   const res = await fetch(url, { timeout: 15000 });
   const text = await res.text();
   return parseXmlItems(text);
