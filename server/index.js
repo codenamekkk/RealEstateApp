@@ -1313,13 +1313,25 @@ async function fetchBuildingDetail(sigunguCd, bjdongCd, bun, ji) {
 }
 
 /**
- * 건축물대장 전유공용면적 조회
+ * 건축물대장 전유공용면적 조회 (전유만, 페이지네이션)
  */
 async function fetchBuildingAreaInfo(sigunguCd, bjdongCd, bun, ji) {
-  const url = `${BUILDING_API_URL}/getBrExposPubuseAreaInfo?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=9999&pageNo=1`;
-  const res = await fetch(url, { timeout: 15000 });
-  const text = await res.text();
-  return parseXmlItems(text);
+  const allItems = [];
+  let page = 1;
+  while (true) {
+    const url = `${BUILDING_API_URL}/getBrExposPubuseAreaInfo?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&sigunguCd=${sigunguCd}&bjdongCd=${bjdongCd}&bun=${bun}&ji=${ji}&numOfRows=9999&pageNo=${page}`;
+    const res = await fetch(url, { timeout: 15000 });
+    const text = await res.text();
+    const items = parseXmlItems(text);
+    if (items.length === 0) break;
+    allItems.push(...items);
+    const totalMatch = text.match(/<totalCount>(\d+)<\/totalCount>/);
+    const total = totalMatch ? parseInt(totalMatch[1]) : 0;
+    if (allItems.length >= total) break;
+    page++;
+    if (page > 10) break; // 안전장치
+  }
+  return allItems;
 }
 
 /**
@@ -1609,16 +1621,21 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     let buildingResult = null;
     let exclusiveAreas = [];
     try {
-      const { summary, detail, areas } = await getBuildingInfoCached(
+      const { summary, areas } = await getBuildingInfoCached(
         addrInfo.sigunguCd, addrInfo.bjdongCd, addrInfo.bun, addrInfo.ji
       );
 
-      const totalHhld = parseInt(summary?.hhldCnt || summary?.hoCnt) || 0;
+      const totalHhld = parseInt(summary?.hhldCnt) || 0;
       const totalPkng = parseInt(summary?.totPkngCnt) || 0;
-      const maxFloor = Array.isArray(detail)
-        ? Math.max(...detail.map(d => parseInt(d.grndFlrCnt) || 0), 0)
-        : parseInt(detail?.grndFlrCnt) || 0;
-      const bldCnt = Array.isArray(detail) ? detail.length : (parseInt(summary?.dongCnt) || 0);
+      const bldCnt = parseInt(summary?.mainBldCnt) || 0;
+      // 최고층수: 전유공용면적에서 최대 층수 추출
+      const maxFloor = (areas || [])
+        .filter(a => (a.flrGbCdNm || "").includes("지상"))
+        .reduce((max, a) => Math.max(max, parseInt(a.flrNo) || 0), 0);
+      // 사용승인일: 총괄표제부 useAprDay, 없으면 stcnsDay(착공일)에서 추정
+      const useAprDate = (summary?.useAprDay || "").trim()
+        || (summary?.pmsDay || "").trim()
+        || null;
 
       exclusiveAreas = buildExclusiveAreasFromLedger(areas);
 
@@ -1630,7 +1647,7 @@ app.get("/api/apartment/complex-info", async (req, res) => {
         parkingPerUnit: totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0,
         bcRat: parseFloat(summary?.bcRat) || 0,
         vlRat: parseFloat(summary?.vlRat) || 0,
-        useAprDate: summary?.useAprDay || (Array.isArray(detail) && detail[0]?.useAprDay) || null,
+        useAprDate,
         totArea: parseFloat(summary?.totArea) || 0,
       };
 
