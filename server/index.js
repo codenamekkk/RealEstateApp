@@ -1440,6 +1440,9 @@ function buildExclusiveAreasFromLedger(areas) {
     if (areaVal <= 0) continue;
 
     if ((a.exposPubuseGbCdNm || "").includes("전유")) {
+      // 아파트 용도만 포함 (상가, 근린생활시설 등 제외)
+      const purps = (a.mainPurpsCdNm || a.etcPurps || "").toLowerCase();
+      if (purps && !purps.includes("아파트") && !purps.includes("공동주택") && (purps.includes("근린") || purps.includes("상가") || purps.includes("업무") || purps.includes("판매"))) continue;
       if (!unitMap[pk]) unitMap[pk] = { excl: 0, commonSum: 0, flrNo: 0, dongNm: "" };
       unitMap[pk].excl = areaVal;
       unitMap[pk].flrNo = parseInt(a.flrNo) || 0;
@@ -1494,7 +1497,14 @@ async function findKaptCode(bjdCode, aptName) {
   const items = data?.response?.body?.items || [];
   if (!items.length) return null;
 
-  const normalize = s => (s || "").replace(/[\s()（）\-·,.·]/g, "").toLowerCase();
+  const normalize = s => (s || "")
+    .replace(/[\s()（）\-·,.·]/g, "")
+    .replace(/에스케이/g, "sk").replace(/엘지/g, "lg").replace(/지에스/g, "gs")
+    .replace(/케이비/g, "kb").replace(/에이치/g, "h").replace(/디에이치/g, "dh")
+    .replace(/아이파크/g, "ipark").replace(/자이/g, "xi")
+    .replace(/sk/gi, "에스케이").replace(/lg/gi, "엘지").replace(/gs/gi, "지에스")
+    .replace(/[\s]/g, "")
+    .toLowerCase();
   const target = normalize(aptName);
 
   // 1차: 정확 일치
