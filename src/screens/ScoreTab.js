@@ -221,6 +221,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     updateProp(selectedProp.id, "address", item.address);
     updateProp(selectedProp.id, "buildYear", item.buildYear ? parseInt(item.buildYear) : null);
     updateProp(selectedProp.id, "bjdongCd", item.bjdongCd || null);
+    updateProp(selectedProp.id, "kaptCode", item.kaptCode || null);
 
     try {
       const regionData = await getRegionCode(item.address);
@@ -258,11 +259,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       let complexJibun = txJibun;
       let complexUmdNm = regionData.umdNm;
       try {
-        const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, txJibun);
+        const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, txJibun, item.kaptCode);
         if (selectRequestId.current !== reqId) return;
         updateProp(selectedProp.id, "complexInfo", info);
         complexJibun = info?.jibun || txJibun;
         complexUmdNm = info?.umdNm || regionData.umdNm;
+        // kaptCode backfill: 검색에서 못 받았으면 complex-info 응답에서 저장
+        if (info?.kaptCode && !item.kaptCode) {
+          updateProp(selectedProp.id, "kaptCode", info.kaptCode);
+        }
       } catch (e) {
         console.warn("단지 정보 조회 실패:", e.message);
         updateProp(selectedProp.id, "complexInfo", null);

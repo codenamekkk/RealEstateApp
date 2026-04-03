@@ -141,6 +141,36 @@ db.exec(`
   )
 `);
 
+// ── 공동주택 단지 마스터 테이블 ──────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS apt_master (
+    kapt_code   TEXT PRIMARY KEY,
+    kapt_name   TEXT NOT NULL,
+    bjd_code    TEXT NOT NULL,
+    sido_nm     TEXT,
+    sgg_nm      TEXT,
+    umd_nm      TEXT,
+    jibun       TEXT,
+    kapt_addr   TEXT,
+    doro_addr   TEXT,
+    sigungu_cd  TEXT,
+    bjdong_cd   TEXT,
+    bun         TEXT,
+    ji          TEXT,
+    indexed_at  INTEGER DEFAULT (unixepoch())
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_apt_master_bjd ON apt_master(bjd_code)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_apt_master_name ON apt_master(kapt_name)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_apt_master_lawd ON apt_master(sigungu_cd)`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS apt_index_log (
+    bjd_code   TEXT PRIMARY KEY,
+    indexed_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+
 // ── 법정동코드 시딩 ──────────────────────────────────────────────
 const regionCount = db.prepare("SELECT COUNT(*) as cnt FROM region_codes").get();
 if (regionCount.cnt === 0) {
@@ -696,53 +726,86 @@ async function searchJusoAddress(query) {
     }));
 }
 
-// ── 공동주택 단지 목록 검색 함수 ─────────────────────────────────────
+// ── 공동주택 단지 검색 함수 (apt_master 우선) ────────────────────────
 async function searchAptByName(query) {
-  if (!BUILDING_API_KEY) return [];
-  // 실거래 캐시에서 아파트명 검색
-  const normalize = s => (s || "").replace(/[\s()（）\-·,.·]/g, "").toLowerCase();
+  const normalize = s => (s || "").replace(/[\s()（）\-·,.·]/g, "")
+    .replace(/에스케이/g, "sk").replace(/엘지/g, "lg").replace(/지에스/g, "gs")
+    .replace(/sk/gi, "에스케이").replace(/lg/gi, "엘지").replace(/gs/gi, "지에스")
+    .replace(/[동리읍면](?=[가-힣])/g, "").toLowerCase();
   const target = normalize(query);
-  const rows = db.prepare(
-    "SELECT DISTINCT apt_nm, umd_nm, lawd_cd FROM transaction_cache WHERE apt_nm LIKE ? LIMIT 50"
-  ).all(`%${query}%`);
 
   const results = [];
   const seen = new Set();
-  for (const r of rows) {
+
+  // 1순위: apt_master에서 검색 (kaptCode 포함)
+  const masterRows = db.prepare(
+    "SELECT kapt_code, kapt_name, sgg_nm, umd_nm, bjd_code, jibun FROM apt_master WHERE kapt_name LIKE ? LIMIT 50"
+  ).all(`%${query}%`);
+  for (const r of masterRows) {
+    const address = `${r.sgg_nm || ""} ${r.umd_nm || ""}`.trim();
+    const key = `${r.kapt_name}_${address}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      aptName: r.kapt_name, address, buildYear: null, units: null, buildings: null,
+      kaptCode: r.kapt_code, bjdCode: r.bjd_code, jibun: r.jibun || null,
+    });
+  }
+
+  // 2순위: 실거래 캐시에서 검색 (apt_master 매칭 시도)
+  const txRows = db.prepare(
+    "SELECT DISTINCT apt_nm, umd_nm, lawd_cd FROM transaction_cache WHERE apt_nm LIKE ? LIMIT 50"
+  ).all(`%${query}%`);
+  for (const r of txRows) {
     const guRow = db.prepare("SELECT gu_nm FROM region_codes WHERE lawd_cd = ?").get(r.lawd_cd);
     const address = `${guRow?.gu_nm || ""} ${r.umd_nm || ""}`.trim();
     const key = `${r.apt_nm}_${address}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    results.push({ aptName: r.apt_nm, address, buildYear: null, units: null, buildings: null });
+    // apt_master에서 kaptCode 조회 시도
+    const masterMatch = db.prepare(
+      "SELECT kapt_code, bjd_code, jibun FROM apt_master WHERE sigungu_cd = ? AND kapt_name LIKE ? LIMIT 1"
+    ).get(r.lawd_cd, `%${r.apt_nm}%`);
+    results.push({
+      aptName: r.apt_nm, address, buildYear: null, units: null, buildings: null,
+      kaptCode: masterMatch?.kapt_code || null, bjdCode: masterMatch?.bjd_code || null,
+      jibun: masterMatch?.jibun || null,
+    });
   }
 
-  // 공동주택 단지 목록 API로 보완 검색
-  try {
-    // 주소에서 법정동코드 추출 시도
-    const jusoList = await searchJusoAPI(query);
-    const bjdCodes = new Set();
-    for (const j of jusoList) {
-      if (j.admCd) bjdCodes.add(j.admCd.substring(0, 10));
-    }
-    // 법정동코드별 단지 목록 조회
-    for (const bjdCode of bjdCodes) {
-      const url = `${APT_API_URL}/AptListService3/getLegaldongAptList3?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&bjdCode=${bjdCode}&numOfRows=100&pageNo=1`;
-      const res = await fetch(url, { timeout: 10000 });
-      const data = await res.json();
-      const items = data?.response?.body?.items || [];
-      for (const item of items) {
-        const name = item.kaptName || "";
-        if (!normalize(name).includes(target) && !target.includes(normalize(name))) continue;
-        const address = `${item.as2 || ""} ${item.as3 || ""}`.trim();
-        const key = `${name}_${address}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        results.push({ aptName: name, address, buildYear: null, units: null, buildings: null });
+  // 3순위: JUSO로 법정동코드 확보 → apt_master 인덱싱 + 검색
+  if (results.length < 5) {
+    try {
+      const jusoList = await searchJusoAPI(query);
+      const bjdCodes = new Set();
+      for (const j of jusoList) {
+        if (j.admCd) bjdCodes.add(j.admCd.substring(0, 10));
       }
+      for (const bjdCode of bjdCodes) {
+        // 인덱싱 안 된 지역이면 백그라운드 인덱싱 트리거
+        const indexed = db.prepare("SELECT 1 FROM apt_index_log WHERE bjd_code = ?").get(bjdCode);
+        if (!indexed) indexAptsByBjdCode(bjdCode).catch(() => {});
+
+        // apt_master에서 해당 지역 아파트 검색
+        const regionRows = db.prepare(
+          "SELECT kapt_code, kapt_name, sgg_nm, umd_nm, bjd_code, jibun FROM apt_master WHERE bjd_code = ?"
+        ).all(bjdCode);
+        for (const r of regionRows) {
+          const n = normalize(r.kapt_name);
+          if (!n.includes(target) && !target.includes(n)) continue;
+          const address = `${r.sgg_nm || ""} ${r.umd_nm || ""}`.trim();
+          const key = `${r.kapt_name}_${address}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({
+            aptName: r.kapt_name, address, buildYear: null, units: null, buildings: null,
+            kaptCode: r.kapt_code, bjdCode: r.bjd_code, jibun: r.jibun || null,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("[검색] 보완 검색 실패:", e.message);
     }
-  } catch (e) {
-    console.warn("[검색] 공동주택 단지목록 보완 실패:", e.message);
   }
 
   return results;
@@ -1489,7 +1552,120 @@ function buildExclusiveAreasFromLedger(areas) {
 // ── 공동주택 기본정보 API ──────────────────────────────────────────
 
 /**
- * 법정동코드로 공동주택 단지 목록 조회 → kaptCode 매칭
+ * kaptAddr (예: "서울특별시 성북구 종암동 104-1 종암SK") 파싱
+ */
+function parseKaptAddr(kaptAddr, bjdCode) {
+  if (!kaptAddr || !bjdCode) return null;
+  const parts = kaptAddr.trim().split(/\s+/);
+  // 번지 찾기: 숫자 또는 숫자-숫자 패턴
+  let jibunStr = "";
+  let umdNm = "";
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^\d+(-\d+)?$/.test(parts[i])) {
+      jibunStr = parts[i];
+      // 바로 앞이 동/리/읍/면이면 umdNm
+      if (i > 0 && /[동리읍면]$/.test(parts[i - 1])) umdNm = parts[i - 1];
+      break;
+    }
+  }
+  if (!jibunStr) return null;
+
+  const jibunParts = jibunStr.split("-");
+  const bun = (jibunParts[0] || "0").padStart(4, "0");
+  const ji = (jibunParts[1] || "0").padStart(4, "0");
+  const sigunguCd = bjdCode.substring(0, 5);
+  const bjdongCd = bjdCode.substring(5, 10);
+
+  return {
+    sigunguCd, bjdongCd, bun, ji,
+    umdNm: umdNm || parts.find(p => /[동리읍면]$/.test(p)) || "",
+    jibun: jibunStr,
+    sidoNm: parts[0] || "",
+    sggNm: parts[1] || "",
+  };
+}
+
+/**
+ * 법정동코드 단위로 공동주택 단지를 인덱싱하여 apt_master에 저장
+ */
+async function indexAptsByBjdCode(bjdCode) {
+  if (!BUILDING_API_KEY || !bjdCode) return;
+  const THIRTY_DAYS = 30 * 24 * 60 * 60;
+  const log = db.prepare("SELECT indexed_at FROM apt_index_log WHERE bjd_code = ?").get(bjdCode);
+  if (log && (Math.floor(Date.now() / 1000) - log.indexed_at) < THIRTY_DAYS) return;
+
+  console.log(`[APT-INDEX] 인덱싱 시작: ${bjdCode}`);
+  try {
+    // 단지 목록 조회
+    const listUrl = `${APT_API_URL}/AptListService3/getLegaldongAptList3?serviceKey=${encodeURIComponent(BUILDING_API_KEY)}&bjdCode=${bjdCode}&numOfRows=100&pageNo=1`;
+    const listRes = await fetch(listUrl, { timeout: 10000 });
+    const listData = await listRes.json();
+    const items = listData?.response?.body?.items || [];
+    if (!items.length) return;
+
+    const insertStmt = db.prepare(`INSERT OR REPLACE INTO apt_master
+      (kapt_code, kapt_name, bjd_code, sido_nm, sgg_nm, umd_nm, jibun, kapt_addr, doro_addr, sigungu_cd, bjdong_cd, bun, ji)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    // 배치로 기본정보 조회 (5개씩)
+    for (let i = 0; i < items.length; i += 5) {
+      const batch = items.slice(i, i + 5);
+      const results = await Promise.allSettled(
+        batch.map(item => fetchAptBasisInfo(item.kaptCode))
+      );
+      for (let j = 0; j < batch.length; j++) {
+        const item = batch[j];
+        const info = results[j].status === "fulfilled" ? results[j].value : null;
+        const addr = info?.kaptAddr ? parseKaptAddr(info.kaptAddr, item.bjdCode || bjdCode) : null;
+        insertStmt.run(
+          item.kaptCode, item.kaptName, item.bjdCode || bjdCode,
+          item.as1 || addr?.sidoNm || "", item.as2 || addr?.sggNm || "", item.as3 || addr?.umdNm || "",
+          addr?.jibun || "", info?.kaptAddr || "", info?.doroJuso || "",
+          addr?.sigunguCd || bjdCode.substring(0, 5), addr?.bjdongCd || bjdCode.substring(5, 10),
+          addr?.bun || "", addr?.ji || ""
+        );
+      }
+    }
+
+    db.prepare("INSERT OR REPLACE INTO apt_index_log (bjd_code) VALUES (?)").run(bjdCode);
+    console.log(`[APT-INDEX] 인덱싱 완료: ${bjdCode} (${items.length}건)`);
+  } catch (e) {
+    console.warn(`[APT-INDEX] 인덱싱 실패: ${bjdCode}`, e.message);
+  }
+}
+
+/**
+ * apt_master에서 kaptCode 조회 (캐시 우선, 없으면 라이브 API)
+ */
+async function lookupKaptCode(bjdCode, aptName) {
+  if (!aptName || !bjdCode) return null;
+  const normalize = s => (s || "").replace(/[\s()（）\-·,.·]/g, "")
+    .replace(/에스케이/g, "sk").replace(/엘지/g, "lg").replace(/지에스/g, "gs")
+    .replace(/sk/gi, "에스케이").replace(/lg/gi, "엘지").replace(/gs/gi, "지에스")
+    .replace(/[동리읍면](?=[가-힣])/g, "").toLowerCase();
+  const target = normalize(aptName);
+
+  // apt_master에서 검색
+  const rows = db.prepare("SELECT kapt_code, kapt_name FROM apt_master WHERE bjd_code = ?").all(bjdCode);
+  if (rows.length > 0) {
+    let match = rows.find(r => normalize(r.kapt_name) === target);
+    if (!match) match = rows.find(r => normalize(r.kapt_name).includes(target) || target.includes(normalize(r.kapt_name)));
+    if (match) return match.kapt_code;
+  }
+
+  // 캐시에 없으면 인덱싱 후 재시도
+  await indexAptsByBjdCode(bjdCode);
+  const rows2 = db.prepare("SELECT kapt_code, kapt_name FROM apt_master WHERE bjd_code = ?").all(bjdCode);
+  let match = rows2.find(r => normalize(r.kapt_name) === target);
+  if (!match) match = rows2.find(r => normalize(r.kapt_name).includes(target) || target.includes(normalize(r.kapt_name)));
+  if (match) return match.kapt_code;
+
+  // 최종 fallback: 라이브 API
+  return findKaptCode(bjdCode, aptName);
+}
+
+/**
+ * 법정동코드로 공동주택 단지 목록 조회 → kaptCode 매칭 (라이브 API fallback)
  */
 async function findKaptCode(bjdCode, aptName) {
   if (!BUILDING_API_KEY || !bjdCode) return null;
@@ -1547,35 +1723,73 @@ async function fetchAptBasisInfo(kaptCode) {
   return data?.response?.body?.item || null;
 }
 
-// ── 단지 정보 조회 엔드포인트 (공공 API 기반 + KB 보강) ─────────────
+// ── 단지 정보 조회 엔드포인트 (kaptCode 우선 + 레거시 fallback) ─────
 app.get("/api/apartment/complex-info", async (req, res) => {
-  const { lawdCd, address, aptName, jibun: reqJibun } = req.query;
+  const { lawdCd, address, aptName, jibun: reqJibun, kaptCode: reqKaptCode } = req.query;
   if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
 
   try {
-    // 1단계: 주소 상세정보 확보
-    // jibun이 전달되면 해당 번지로 직접 JUSO 검색 (정확도 높음)
     let addrInfo = null;
-    if (reqJibun && address) {
-      const parts = address.split(/\s+/);
-      const dongPart = parts.find(p => /[동리읍면]$/.test(p));
-      const guPart = parts.find(p => /[구군]$/.test(p));
-      const guRow = db.prepare("SELECT sido_nm, gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
-      const keyword = `${guRow?.sido_nm || ""} ${guPart || guRow?.gu_nm || ""} ${dongPart || ""} ${reqJibun}`.trim();
-      const jusoList = await searchJusoAPI(keyword);
-      if (jusoList.length > 0) {
-        addrInfo = parseJusoResult(jusoList[0]);
-        console.log(`[JUSO] jibun 직접 검색 성공: "${keyword}"`);
+    let resolvedKaptCode = reqKaptCode || null;
+
+    // ═══ kaptCode 우선 경로: apt_master에서 확정된 주소 직접 사용 ═══
+    if (reqKaptCode) {
+      // apt_master에서 조회
+      const master = db.prepare("SELECT * FROM apt_master WHERE kapt_code = ?").get(reqKaptCode);
+      if (master && master.bun && master.bun !== "") {
+        addrInfo = {
+          sigunguCd: master.sigungu_cd, bjdongCd: master.bjdong_cd,
+          bun: master.bun, ji: master.ji || "0000",
+          umdNm: master.umd_nm, jibun: master.jibun,
+          doroJuso: master.doro_addr, bdNm: master.kapt_name,
+        };
+        console.log(`[COMPLEX] kaptCode 경로: ${reqKaptCode} → ${master.kapt_name} (${master.jibun})`);
+      } else {
+        // apt_master에 없으면 기본정보 API로 주소 획득 후 저장
+        const info = await fetchAptBasisInfo(reqKaptCode);
+        if (info?.kaptAddr) {
+          const parsed = parseKaptAddr(info.kaptAddr, info.bjdCode || (lawdCd + "00000"));
+          if (parsed) {
+            addrInfo = { ...parsed, doroJuso: info.doroJuso || "", bdNm: info.kaptName || aptName };
+            // apt_master에 캐싱
+            db.prepare(`INSERT OR REPLACE INTO apt_master
+              (kapt_code, kapt_name, bjd_code, sido_nm, sgg_nm, umd_nm, jibun, kapt_addr, doro_addr, sigungu_cd, bjdong_cd, bun, ji)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+              reqKaptCode, info.kaptName || aptName, info.bjdCode || "",
+              parsed.sidoNm, parsed.sggNm, parsed.umdNm, parsed.jibun,
+              info.kaptAddr, info.doroJuso || "",
+              parsed.sigunguCd, parsed.bjdongCd, parsed.bun, parsed.ji
+            );
+            console.log(`[COMPLEX] kaptCode → 기본정보 API로 주소 확보: ${reqKaptCode}`);
+          }
+        }
       }
     }
+
+    // ═══ 레거시 fallback: jibun/JUSO 기반 주소 해결 ═══
     if (!addrInfo) {
-      addrInfo = await resolveAddressFromJuso(aptName, address || "", lawdCd);
-    }
-    if (!addrInfo || !addrInfo.sigunguCd || !addrInfo.bjdongCd) {
-      return res.status(404).json({ error: `주소를 확인할 수 없습니다: ${aptName}` });
+      if (reqJibun && address) {
+        const parts = address.split(/\s+/);
+        const dongPart = parts.find(p => /[동리읍면]$/.test(p));
+        const guPart = parts.find(p => /[구군]$/.test(p));
+        const guRow = db.prepare("SELECT sido_nm, gu_nm FROM region_codes WHERE lawd_cd = ?").get(lawdCd);
+        const keyword = `${guRow?.sido_nm || ""} ${guPart || guRow?.gu_nm || ""} ${dongPart || ""} ${reqJibun}`.trim();
+        const jusoList = await searchJusoAPI(keyword);
+        if (jusoList.length > 0) {
+          addrInfo = parseJusoResult(jusoList[0]);
+          console.log(`[COMPLEX] 레거시 jibun 직접 검색: "${keyword}"`);
+        }
+      }
+      if (!addrInfo) {
+        addrInfo = await resolveAddressFromJuso(aptName, address || "", lawdCd);
+      }
+      if (!addrInfo || !addrInfo.sigunguCd || !addrInfo.bjdongCd) {
+        return res.status(404).json({ error: `주소를 확인할 수 없습니다: ${aptName}` });
+      }
+      console.log(`[COMPLEX] 레거시 경로 사용: ${aptName}`);
     }
 
-    // 2단계: 건축물대장 API로 단지정보 조회 (공공 API - 항상 동작)
+    // ═══ 2단계: 건축물대장 API 조회 ═══
     let buildingResult = null;
     let exclusiveAreas = [];
     try {
@@ -1586,11 +1800,9 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       const totalHhld = parseInt(summary?.hhldCnt) || 0;
       const totalPkng = parseInt(summary?.totPkngCnt) || 0;
       const bldCnt = parseInt(summary?.mainBldCnt) || 0;
-      // 최고층수: 전유공용면적에서 최대 층수 추출
       const maxFloor = (areas || [])
         .filter(a => (a.flrGbCdNm || "").includes("지상"))
         .reduce((max, a) => Math.max(max, parseInt(a.flrNo) || 0), 0);
-      // 사용승인일: 총괄표제부 useAprDay, 없으면 stcnsDay(착공일)에서 추정
       const useAprDate = (summary?.useAprDay || "").trim()
         || (summary?.pmsDay || "").trim()
         || null;
@@ -1598,29 +1810,27 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       exclusiveAreas = buildExclusiveAreasFromLedger(areas);
 
       buildingResult = {
-        buildingCount: bldCnt,
-        maxFloor,
-        totalHouseholds: totalHhld,
+        buildingCount: bldCnt, maxFloor, totalHouseholds: totalHhld,
         totalParking: totalPkng,
         parkingPerUnit: totalHhld > 0 ? Math.round((totalPkng / totalHhld) * 100) / 100 : 0,
-        bcRat: parseFloat(summary?.bcRat) || 0,
-        vlRat: parseFloat(summary?.vlRat) || 0,
-        useAprDate,
-        totArea: parseFloat(summary?.totArea) || 0,
+        bcRat: parseFloat(summary?.bcRat) || 0, vlRat: parseFloat(summary?.vlRat) || 0,
+        useAprDate, totArea: parseFloat(summary?.totArea) || 0,
       };
-
       console.log(`[COMPLEX] 건축물대장 조회 완료: ${aptName} → ${exclusiveAreas.length}개 타입`);
     } catch (e) {
       console.warn("[COMPLEX] 건축물대장 조회 실패:", e.message);
     }
 
-    // 3단계: 공동주택 기본정보 API 보강 (건설사, 난방, 관리사무소, 사용승인일, 현관구조)
+    // ═══ 3단계: 공동주택 기본정보 보강 ═══
     let aptEnrich = {};
     try {
-      const bjdCode = addrInfo.sigunguCd + addrInfo.bjdongCd;
-      const kaptCode = await findKaptCode(bjdCode, aptName);
-      if (kaptCode) {
-        const info = await fetchAptBasisInfo(kaptCode);
+      // kaptCode 확보: 이미 있거나 lookupKaptCode로 검색
+      if (!resolvedKaptCode) {
+        const bjdCode = addrInfo.sigunguCd + addrInfo.bjdongCd;
+        resolvedKaptCode = await lookupKaptCode(bjdCode, aptName);
+      }
+      if (resolvedKaptCode) {
+        const info = await fetchAptBasisInfo(resolvedKaptCode);
         if (info) {
           aptEnrich = {
             heatType: info.codeHeatNm || null,
@@ -1630,26 +1840,20 @@ app.get("/api/apartment/complex-info", async (req, res) => {
             hallType: info.codeHallNm || null,
             manageType: info.codeMgrNm || null,
           };
-          // 건축물대장에서 사용승인일이 없으면 공동주택 API에서 보충
           if (buildingResult && !buildingResult.useAprDate && info.kaptUsedate) {
             buildingResult.useAprDate = info.kaptUsedate;
           }
-          // 건축물대장이 실패했을 때 공동주택 API로 대체
           if (!buildingResult) {
             const totalHhld = parseInt(info.kaptdaCnt) || 0;
             buildingResult = {
               buildingCount: parseInt(info.kaptDongCnt) || 0,
               maxFloor: parseInt(info.kaptTopFloor) || 0,
-              totalHouseholds: totalHhld,
-              totalParking: 0,
-              parkingPerUnit: 0,
-              bcRat: 0,
-              vlRat: 0,
-              useAprDate: info.kaptUsedate || null,
+              totalHouseholds: totalHhld, totalParking: 0, parkingPerUnit: 0,
+              bcRat: 0, vlRat: 0, useAprDate: info.kaptUsedate || null,
               totArea: parseFloat(info.kaptTarea) || 0,
             };
           }
-          console.log(`[COMPLEX] 공동주택 기본정보 보강 완료: ${aptName} (${kaptCode})`);
+          console.log(`[COMPLEX] 공동주택 기본정보 보강 완료: ${aptName} (${resolvedKaptCode})`);
         }
       }
     } catch (e) {
@@ -1681,9 +1885,10 @@ app.get("/api/apartment/complex-info", async (req, res) => {
       doroJuso: addrInfo.doroJuso || null,
       umdNm: addrInfo.umdNm || null,
       jibun: addrInfo.jibun || null,
+      kaptCode: resolvedKaptCode || null,
     };
 
-    console.log(`[COMPLEX] 최종 응답: ${aptName} → ${exclusiveAreas.length}개 타입`);
+    console.log(`[COMPLEX] 최종 응답: ${aptName} → ${exclusiveAreas.length}개 타입, kaptCode: ${resolvedKaptCode || "없음"}`);
     res.json(result);
   } catch (e) {
     console.error("단지정보 조회 실패:", e.message, e.stack);

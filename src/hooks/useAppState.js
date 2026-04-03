@@ -18,6 +18,7 @@ export default function useAppState() {
   const [localProperties, setLocalProperties] = useState([
     { id: 1, name: "", address: "", price: "", scores: {}, memo: "",
       lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
+      kaptCode: null,
       recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
       pricePercentile: null, dongPercentile: null,
       dongSummary: [], transactionHistory: [], neighborComparison: [],
@@ -274,6 +275,7 @@ export default function useAppState() {
       return [...ps, {
         id, name: "", address: "", price: "", scores: {}, memo: "",
         lawdCd: null, umdNm: null, guNm: null, buildYear: null, area: null, selectedArea: null,
+        kaptCode: null,
         recentPrice: null, highestPrice: null, regionAvg: null, dongAvg: null,
         pricePercentile: null, dongPercentile: null,
         dongSummary: [], transactionHistory: [], neighborComparison: [],
