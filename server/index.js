@@ -1428,7 +1428,13 @@ function buildExclusiveAreasFromLedger(areas) {
       unitMap[pk].dongNm = a.dongNm || "";
     } else if ((a.exposPubuseGbCdNm || "").includes("공용")) {
       if (!unitMap[pk]) unitMap[pk] = { excl: 0, commonSum: 0, flrNo: 0, dongNm: "" };
-      unitMap[pk].commonSum += areaVal;
+      // 주거 공용만 합산 (주차장, 기계실, 부속건축물 등 기타 공용 제외)
+      const purps = (a.etcPurps || "").toLowerCase();
+      const isOtherCommon = /주차|펌프|전기|기계|관리|노인|보육|경비|쓰레기|저수|발전|통신/.test(purps)
+        || (a.mainAtchGbCdNm || "").includes("부속");
+      if (!isOtherCommon) {
+        unitMap[pk].commonSum += areaVal;
+      }
     }
   }
 
