@@ -233,7 +233,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       // 1단계: 실거래 데이터 먼저 조회 (jibun 확보)
       let txJibun = null;
       try {
-        const txData = await getTransactions(item.aptName, regionData.lawdCd, "전체", 12, item.buildYear, regionData.umdNm);
+        const txData = await getTransactions(item.aptName, regionData.lawdCd, "전체", 12, item.buildYear, regionData.umdNm, item.jibun);
         if (selectRequestId.current !== reqId) return;
         if (txData?.transactions?.length > 0) {
           // 서버에서 jibun을 캐시에 저장했으므로, 이제 complex-info에서 활용 가능
