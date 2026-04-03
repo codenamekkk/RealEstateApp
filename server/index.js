@@ -629,11 +629,13 @@ function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, a
     if (area && area !== "전체") {
       const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
       if (areaValues.length > 1) {
-        where += ` AND exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
-        params.push(...areaValues);
+        // 여러 면적: 각 면적별 ±5 범위 OR 조건
+        const conditions = areaValues.map(() => "(exclu_use_ar BETWEEN ? AND ?)");
+        where += ` AND (${conditions.join(" OR ")})`;
+        for (const v of areaValues) { params.push(v - 5, v + 5); }
       } else {
-        where += " AND exclu_use_ar IN (?)";
-        params.push(areaValues[0]);
+        where += " AND exclu_use_ar BETWEEN ? AND ?";
+        params.push(areaValues[0] - 5, areaValues[0] + 5);
       }
     }
     if (monthList && monthList.length > 0) {
