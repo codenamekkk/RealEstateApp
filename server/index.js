@@ -1450,7 +1450,7 @@ function buildExclusiveAreasFromLedger(areas) {
   }
 
   return Object.values(grouped).map(g => {
-    const supplyArea = Math.round(g.area + g.commonSum);
+    const supplyArea = Math.floor(g.area + g.commonSum);
     return {
       area: g.area,
       areaPyeong: Math.floor(g.area / 3.3058),
