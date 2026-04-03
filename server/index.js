@@ -1135,12 +1135,14 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const months = getMonthRange(12);
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
-    // area가 콤마 구분이면 IN, 단일값이면 BETWEEN ±5
+    // area: 단일/복수 모두 ±5㎡ 오차 적용
     const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
     let areaWhere, areaBinds;
     if (areaValues.length > 1) {
-      areaWhere = `exclu_use_ar IN (${areaValues.map(() => "?").join(",")})`;
-      areaBinds = areaValues;
+      const conditions = areaValues.map(() => "(exclu_use_ar BETWEEN ? AND ?)");
+      areaWhere = `(${conditions.join(" OR ")})`;
+      areaBinds = [];
+      for (const v of areaValues) { areaBinds.push(v - 5, v + 5); }
     } else {
       areaWhere = `exclu_use_ar BETWEEN ? AND ?`;
       areaBinds = [areaValues[0] - 5, areaValues[0] + 5];
