@@ -1408,26 +1408,43 @@ async function getBuildingInfoCached(sigunguCd, bjdongCd, bun, ji) {
 
 /**
  * 건축물대장 전유공용면적에서 평수 타입 목록 생성
+ * 같은 mgmBldrgstPk(호수)의 전유 + 공용 합산 = 공급면적
  */
 function buildExclusiveAreasFromLedger(areas) {
-  // 전유 면적만 필터 (exposPubuseGbCdNm === "전유")
-  const units = (areas || []).filter(a => (a.exposPubuseGbCdNm || "").includes("전유"));
-  if (!units.length) return [];
+  if (!areas || !areas.length) return [];
 
-  // 전용면적 그룹핑
+  // mgmBldrgstPk별로 전유면적 + 공용면적 합산
+  const unitMap = {}; // key: mgmBldrgstPk → { excl, commonSum, flrNo, dongNm }
+  for (const a of areas) {
+    const pk = a.mgmBldrgstPk;
+    if (!pk) continue;
+    const areaVal = parseFloat(a.area) || 0;
+    if (areaVal <= 0) continue;
+
+    if ((a.exposPubuseGbCdNm || "").includes("전유")) {
+      if (!unitMap[pk]) unitMap[pk] = { excl: 0, commonSum: 0, flrNo: 0, dongNm: "" };
+      unitMap[pk].excl = areaVal;
+      unitMap[pk].flrNo = parseInt(a.flrNo) || 0;
+      unitMap[pk].dongNm = a.dongNm || "";
+    } else if ((a.exposPubuseGbCdNm || "").includes("공용")) {
+      if (!unitMap[pk]) unitMap[pk] = { excl: 0, commonSum: 0, flrNo: 0, dongNm: "" };
+      unitMap[pk].commonSum += areaVal;
+    }
+  }
+
+  // 전용면적별 그룹핑 (공급면적 = 전용 + 공용합계)
   const grouped = {};
-  for (const u of units) {
-    const excl = parseFloat(u.area) || 0;
-    if (excl <= 0) continue;
-    const key = Math.round(excl * 100); // 소수점 2자리까지 구분
-    if (!grouped[key]) grouped[key] = { area: excl, count: 0, commonArea: 0 };
+  for (const u of Object.values(unitMap)) {
+    if (u.excl <= 0) continue;
+    const key = Math.round(u.excl * 100);
+    if (!grouped[key]) grouped[key] = { area: u.excl, count: 0, commonSum: 0, maxFloor: 0 };
     grouped[key].count++;
-    const common = parseFloat(u.cmmnArea) || 0;
-    if (common > grouped[key].commonArea) grouped[key].commonArea = common;
+    if (u.commonSum > grouped[key].commonSum) grouped[key].commonSum = u.commonSum;
+    if (u.flrNo > grouped[key].maxFloor) grouped[key].maxFloor = u.flrNo;
   }
 
   return Object.values(grouped).map(g => {
-    const supplyArea = Math.floor(g.area + g.commonArea);
+    const supplyArea = Math.round(g.area + g.commonSum);
     return {
       area: g.area,
       areaPyeong: Math.floor(g.area / 3.3058),
