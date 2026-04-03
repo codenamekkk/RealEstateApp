@@ -1440,9 +1440,11 @@ function buildExclusiveAreasFromLedger(areas) {
     if (areaVal <= 0) continue;
 
     if ((a.exposPubuseGbCdNm || "").includes("전유")) {
-      // 아파트 용도만 포함 (상가, 근린생활시설 등 제외)
-      const purps = (a.mainPurpsCdNm || a.etcPurps || "").toLowerCase();
-      if (purps && !purps.includes("아파트") && !purps.includes("공동주택") && (purps.includes("근린") || purps.includes("상가") || purps.includes("업무") || purps.includes("판매"))) continue;
+      // 아파트 용도만 포함 (상가, 유치원, 부대시설 등 제외)
+      const purps = (a.mainPurpsCdNm || "").toLowerCase();
+      const dong = (a.dongNm || "").toLowerCase();
+      if (purps && !purps.includes("아파트") && !purps.includes("공동주택")) continue;
+      if (dong.includes("상가") || dong.includes("유치원") || dong.includes("복리")) continue;
       if (!unitMap[pk]) unitMap[pk] = { excl: 0, commonSum: 0, flrNo: 0, dongNm: "" };
       unitMap[pk].excl = areaVal;
       unitMap[pk].flrNo = parseInt(a.flrNo) || 0;
