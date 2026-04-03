@@ -1509,11 +1509,19 @@ async function findKaptCode(bjdCode, aptName) {
     .toLowerCase();
   const target = normalize(aptName);
 
+  // 동 이름 제거 버전도 준비 (예: "제기동현대" → "제기현대")
+  const stripDong = s => s.replace(/[동리읍면](?=[가-힣])/g, "");
+  const targetStripped = stripDong(target);
+
   // 1차: 정확 일치
   let match = items.find(i => normalize(i.kaptName) === target);
+  if (!match) match = items.find(i => normalize(i.kaptName) === targetStripped);
   // 2차: 포함 매칭
   if (!match) {
-    const contains = items.filter(i => normalize(i.kaptName).includes(target) || target.includes(normalize(i.kaptName)));
+    const contains = items.filter(i => {
+      const n = normalize(i.kaptName);
+      return n.includes(target) || target.includes(n) || n.includes(targetStripped) || targetStripped.includes(n);
+    });
     if (contains.length > 0) {
       contains.sort((a, b) => Math.abs(normalize(a.kaptName).length - target.length) - Math.abs(normalize(b.kaptName).length - target.length));
       match = contains[0];
