@@ -315,6 +315,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
   // 전용면적 → 공급면적 기준 평수 변환
   function getSupplyPyeong(exclusiveArea) {
+    if (!exclusiveArea || exclusiveArea === 0) return "-";
     const ci = selectedProp.complexInfo?.exclusiveAreas?.find(
       e => e.groupedExclusiveAreas
         ? e.groupedExclusiveAreas.some(ea => Math.abs(ea - exclusiveArea) < 1)
@@ -888,7 +889,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                           <Text style={[styles.txCell, styles.txData, { flex: 0.8 }]}>{getSupplyPyeong(t.excluUseAr)}평</Text>
                         )}
                         <Text style={[styles.txCell, styles.txData, styles.txPrice, { flex: 1.5 }]} numberOfLines={1}>
-                          {formatPrice(t.deposit)}/{t.monthlyRent}만
+                          {formatPrice(t.deposit)}/{formatPrice(t.monthlyRent)}
                         </Text>
                         <Text style={[styles.txCell, styles.txData, { flex: 0.6 }]}>{t.floor || "-"}</Text>
                         <Text style={[styles.txCell, styles.txData, { flex: 1.1 }]}>{t.dealDate}</Text>
@@ -912,8 +913,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           {/* 최고/최저 거래가 */}
           {(dataCollecting || areaLoading) ? null : selectedProp.dongSummary?.length > 0 && (() => {
             const ds = selectedProp.dongSummary;
-            const recentHighest = ds.reduce((max, d) => d.highestPrice > max.highestPrice ? d : max, ds[0]);
-            const recentLowest = ds.reduce((min, d) => d.lowestPrice < min.lowestPrice ? d : min, ds[0]);
+            const recentHighest = ds.reduce((max, d) => (d.highestPrice || 0) > (max.highestPrice || 0) ? d : max, ds[0]);
+            const recentLowest = ds.reduce((min, d) => (d.lowestPrice || Infinity) < (min.lowestPrice || Infinity) ? d : min, ds[0]);
             const allTime = selectedProp.allTimePriceRange;
             const isAllTimeLoading = priceRangeTab === "전체기간" && !allTime?.highest;
             const isAllTime = priceRangeTab === "전체기간" && allTime?.highest && allTime?.lowest;
@@ -941,7 +942,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                 {isAllTimeLoading ? (
                   <View style={{ alignItems: "center", paddingVertical: 24 }}>
                     <ActivityIndicator size="small" color="#6366f1" />
-                    <Text style={{ color: "#6b7280", marginTop: 8, fontSize: 13 }}>전체 기간 거래가 조회 중...</Text>
+                    <Text style={{ color: COLORS.textFaint, marginTop: 8, fontSize: 13 }}>전체 기간 거래가 조회 중...</Text>
                   </View>
                 ) : (
                 <>
@@ -1053,6 +1054,13 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   })}
                 </View>
               )}
+            </View>
+          ) : selectedProp.lawdCd && !dataCollecting && !areaLoading ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>📊 지역 시세 분석</Text>
+              <Text style={{ color: COLORS.textFaint, fontSize: 13, textAlign: "center", paddingVertical: 16 }}>
+                해당 지역의 시세 분석 데이터가 없습니다
+              </Text>
             </View>
           ) : null}
 
