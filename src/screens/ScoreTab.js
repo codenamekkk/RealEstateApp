@@ -293,6 +293,26 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }
 
+  // 사용승인일 포맷: 19990407 → 1999.04.07
+  function formatDate(raw) {
+    if (!raw || raw.length !== 8) return raw || "-";
+    return `${raw.substring(0,4)}.${raw.substring(4,6)}.${raw.substring(6,8)}`;
+  }
+
+  // 전화번호 포맷: 029424271 → 02-942-4271
+  function formatPhone(raw) {
+    if (!raw) return "-";
+    const s = raw.replace(/[^0-9]/g, "");
+    if (s.startsWith("02")) {
+      return s.length === 9
+        ? `02-${s.substring(2,5)}-${s.substring(5)}`
+        : `02-${s.substring(2,6)}-${s.substring(6)}`;
+    }
+    return s.length === 10
+      ? `${s.substring(0,3)}-${s.substring(3,6)}-${s.substring(6)}`
+      : `${s.substring(0,3)}-${s.substring(3,7)}-${s.substring(7)}`;
+  }
+
   // 전용면적 → 공급면적 기준 평수 변환
   function getSupplyPyeong(exclusiveArea) {
     const ci = selectedProp.complexInfo?.exclusiveAreas?.find(
@@ -639,7 +659,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   </View>
                   <View style={styles.complexItem}>
                     <Text style={styles.complexLabel}>사용승인일</Text>
-                    <Text style={styles.complexValue}>{selectedProp.complexInfo.useAprDate || "-"}</Text>
+                    <Text style={styles.complexValue}>{formatDate(selectedProp.complexInfo.useAprDate)}</Text>
                   </View>
                 </View>
                 {(selectedProp.complexInfo.heatType || selectedProp.complexInfo.constructor) && (
@@ -669,7 +689,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                     {selectedProp.complexInfo.manageTel && (
                       <View style={[styles.complexItem, { flex: 1.5 }]}>
                         <Text style={styles.complexLabel}>관리사무소</Text>
-                        <Text style={styles.complexValue}>{selectedProp.complexInfo.manageTel}</Text>
+                        <Text style={styles.complexValue}>{formatPhone(selectedProp.complexInfo.manageTel)}</Text>
                       </View>
                     )}
                     {selectedProp.complexInfo.manageType && (
