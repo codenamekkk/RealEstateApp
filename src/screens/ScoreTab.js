@@ -68,9 +68,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     allDataCache.current = { transactions: null, rent: null };
     if (allTimePollRef.current) { clearInterval(allTimePollRef.current); allTimePollRef.current = null; }
     if (selectedProp?.lawdCd) {
-      // 이미 검색된 매물이면 평수 목록 복원
-      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, selectedProp.umdNm, selectedProp.complexInfo?.jibun || null, selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null);
-      setSelectedArea(selectedProp.selectedArea || "전체");
+      // 저장된 매물 재접속: 평수·실거래·전월세 모두 재로드해 stale 데이터를 최신으로 갱신
+      const kapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
+      const jibun = selectedProp.complexInfo?.jibun || null;
+      const umd = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
+      const savedArea = selectedProp.selectedArea || "전체";
+      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, umd, jibun, kapt);
+      loadTransactionData(selectedProp.name, selectedProp.lawdCd, savedArea, umd, selectedProp.buildYear, selectedProp.guNm, null, jibun, kapt);
+      loadRentData(selectedProp.name, selectedProp.lawdCd, savedArea, selectedProp.buildYear, null, umd, jibun, kapt);
+      setSelectedArea(savedArea);
     } else {
       setAreas([]);
       setSelectedArea("전체");
