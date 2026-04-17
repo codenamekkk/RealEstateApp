@@ -2178,7 +2178,10 @@ app.get("/api/apartment/complex-info", async (req, res) => {
     }
 
     // ═══ 3단계: 공동주택 기본정보 보강 ═══
-    let aptEnrich = {};
+    // 빈 객체 {}의 .constructor는 Object.prototype.constructor(Object 함수)를 반환해
+    // JSON.stringify가 함수값을 생략하면서 응답에서 constructor 키가 누락되는 버그 방지.
+    // 모든 필드를 null로 명시 초기화해 own property로 고정.
+    let aptEnrich = { heatType: null, constructor: null, developer: null, manageTel: null, hallType: null, manageType: null };
     try {
       // kaptCode 확보: 이미 있거나 lookupKaptCode로 검색
       if (!resolvedKaptCode) {
