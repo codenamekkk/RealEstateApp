@@ -250,7 +250,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           updateProp(selectedProp.id, "lowestPrice", lowest?.dealAmount || null);
         }
         if (txData.dongSummary) updateProp(selectedProp.id, "dongSummary", txData.dongSummary);
-        if (txData.transactionHistory) updateProp(selectedProp.id, "transactionHistory", txData.transactionHistory);
+        // 서버 응답 필드는 `transactions` — 과거에 `transactionHistory`로 잘못 참조하던 버그 수정
+        updateProp(selectedProp.id, "transactionHistory", txData.transactions || []);
       } catch (e) {
         console.warn("실거래 선 조회 실패:", e.message);
       }
