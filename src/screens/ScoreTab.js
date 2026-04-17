@@ -69,7 +69,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     if (allTimePollRef.current) { clearInterval(allTimePollRef.current); allTimePollRef.current = null; }
     if (selectedProp?.lawdCd) {
       // 이미 검색된 매물이면 평수 목록 복원
-      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, selectedProp.umdNm);
+      loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, selectedProp.umdNm, selectedProp.complexInfo?.jibun || null, selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null);
       setSelectedArea(selectedProp.selectedArea || "전체");
     } else {
       setAreas([]);
@@ -90,9 +90,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }, [selectedArea, areas]);
 
-  async function loadAreas(aptNm, lawdCd, buildYear, umdNm) {
+  async function loadAreas(aptNm, lawdCd, buildYear, umdNm, jibun, kaptCode) {
     try {
-      const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear, umdNm);
+      const areasData = await getApartmentAreas(aptNm, lawdCd, buildYear, umdNm, jibun, kaptCode);
       setAreas(areasData);
     } catch { setAreas([]); }
   }
@@ -112,9 +112,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     }
   }
 
-  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId, umdNm, jibun) {
+  async function loadRentData(aptNm, lawdCd, area, buildYear, reqId, umdNm, jibun, kaptCode) {
     try {
-      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear, umdNm, jibun);
+      const data = await getRentTransactions(aptNm, lawdCd, area, 12, buildYear, umdNm, jibun, kaptCode);
       if (reqId && selectRequestId.current !== reqId) return;
       // area가 "전체"일 때 캐시 저장
       if (area === "전체") {
@@ -233,7 +233,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       // 1단계: 실거래 데이터 먼저 조회 (jibun 확보)
       let txJibun = null;
       try {
-        const txData = await getTransactions(item.aptName, regionData.lawdCd, "전체", 12, item.buildYear, regionData.umdNm, item.jibun);
+        const txData = await getTransactions(item.aptName, regionData.lawdCd, "전체", 12, item.buildYear, regionData.umdNm, item.jibun, item.kaptCode);
         if (selectRequestId.current !== reqId) return;
         if (txData?.transactions?.length > 0) {
           // 서버에서 jibun을 캐시에 저장했으므로, 이제 complex-info에서 활용 가능
@@ -258,6 +258,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       // 2단계: complex-info 조회 (jibun 전달로 정확한 매칭)
       let complexJibun = txJibun;
       let complexUmdNm = regionData.umdNm;
+      let resolvedKapt = item.kaptCode || null;
       try {
         const info = await getComplexInfo(regionData.lawdCd, item.address, item.aptName, item.bjdongCd, txJibun, item.kaptCode);
         if (selectRequestId.current !== reqId) return;
@@ -265,8 +266,9 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         complexJibun = info?.jibun || txJibun;
         complexUmdNm = info?.umdNm || regionData.umdNm;
         // kaptCode backfill: 검색에서 못 받았으면 complex-info 응답에서 저장
-        if (info?.kaptCode && !item.kaptCode) {
-          updateProp(selectedProp.id, "kaptCode", info.kaptCode);
+        if (info?.kaptCode) {
+          resolvedKapt = info.kaptCode;
+          if (!item.kaptCode) updateProp(selectedProp.id, "kaptCode", info.kaptCode);
         }
       } catch (e) {
         console.warn("단지 정보 조회 실패:", e.message);
@@ -275,8 +277,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
       // 3단계: 평수 + 전월세 병렬 조회
       const [areasResult] = await Promise.allSettled([
-        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, complexUmdNm, complexJibun),
-        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, complexUmdNm, complexJibun),
+        getApartmentAreas(item.aptName, regionData.lawdCd, item.buildYear, complexUmdNm, complexJibun, resolvedKapt),
+        loadRentData(item.aptName, regionData.lawdCd, "전체", item.buildYear, reqId, complexUmdNm, complexJibun, resolvedKapt),
       ]);
       if (selectRequestId.current !== reqId) return;
 
@@ -415,9 +417,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         // 특정 평수: 그룹의 모든 전용면적을 콤마 구분으로 서버에 전달
         const propJibun = selectedProp.complexInfo?.jibun || null;
         const propUmdNm = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
+        const propKapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
         await Promise.allSettled([
-          loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, propUmdNm, selectedProp.buildYear, selectedProp.guNm, null, propJibun),
-          loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, null, propUmdNm, propJibun),
+          loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, propUmdNm, selectedProp.buildYear, selectedProp.guNm, null, propJibun, propKapt),
+          loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, null, propUmdNm, propJibun, propKapt),
         ]);
       }
     } finally {
@@ -426,10 +429,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   }
 
   // 실거래 데이터 로드 (지역 분석은 별도 비동기)
-  async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear, guNm, reqId, jibun) {
+  async function loadTransactionData(aptNm, lawdCd, area, umdNm, buildYear, guNm, reqId, jibun, kaptCode) {
     try {
       const areaParam = area === "전체" ? "전체" : String(area);
-      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear, umdNm, jibun);
+      const data = await getTransactions(aptNm, lawdCd, areaParam, 12, buildYear, umdNm, jibun, kaptCode);
       if (reqId && selectRequestId.current !== reqId) return;
 
       // area가 "전체"일 때 캐시 저장
@@ -462,7 +465,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           if (reqId && selectRequestId.current !== reqId) {
             clearInterval(allTimePollRef.current); allTimePollRef.current = null; return;
           }
-          const result = await getAllTimePriceRange(lawdCd, aptNm, areaParam, buildYear, umdNm, jibun);
+          const result = await getAllTimePriceRange(lawdCd, aptNm, areaParam, buildYear, umdNm, jibun, kaptCode);
           if (result.status === "done" && result.allTimePriceRange) {
             updateProp(propId, "allTimePriceRange", result.allTimePriceRange);
             clearInterval(allTimePollRef.current); allTimePollRef.current = null;

@@ -13,34 +13,37 @@ export async function getRegionCode(address) {
   return res.json();
 }
 
-export async function getApartmentAreas(aptNm, lawdCd, buildYear, umdNm, jibun) {
+export async function getApartmentAreas(aptNm, lawdCd, buildYear, umdNm, jibun, kaptCode) {
   let url = `${SERVER_URL}/api/apartment/areas?lawdCd=${lawdCd}`;
   if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
   if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
+  if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("평수 조회 실패");
   return res.json();
 }
 
-export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun) {
+export async function getTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun, kaptCode) {
   let url = `${SERVER_URL}/api/apartment/transactions?lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
   if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
   if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
+  if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("거래 조회 실패");
   return res.json();
 }
 
-export async function getAllTimePriceRange(lawdCd, aptNm, area, buildYear, umdNm, jibun) {
+export async function getAllTimePriceRange(lawdCd, aptNm, area, buildYear, umdNm, jibun, kaptCode) {
   let url = `${SERVER_URL}/api/apartment/alltime-price-range?lawdCd=${lawdCd}&area=${encodeURIComponent(area || "전체")}`;
   if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
   if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
+  if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("전체기간 조회 실패");
   return res.json();
@@ -52,12 +55,13 @@ export async function getRegionalAnalysis(lawdCd, umdNm, area, price, guNm = "")
   return res.json();
 }
 
-export async function getRentTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun) {
+export async function getRentTransactions(aptNm, lawdCd, area = "전체", months = 12, buildYear, umdNm, jibun, kaptCode) {
   let url = `${SERVER_URL}/api/apartment/rent?lawdCd=${lawdCd}&area=${encodeURIComponent(area)}&months=${months}`;
   if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
   if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
+  if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("전월세 조회 실패");
   return res.json();
