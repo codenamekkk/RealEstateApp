@@ -69,6 +69,8 @@ db.exec(`
 // jibun 컬럼이 없으면 추가 (기존 DB 마이그레이션)
 try { db.exec(`ALTER TABLE transaction_cache ADD COLUMN jibun TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
 try { db.exec(`ALTER TABLE transaction_cache ADD COLUMN kapt_code TEXT`); } catch(e) { /* 이미 존재 */ }
+try { db.exec(`ALTER TABLE transaction_cache ADD COLUMN cdeal_type TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
+try { db.exec(`ALTER TABLE transaction_cache ADD COLUMN cdeal_day TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_apt ON transaction_cache(lawd_cd, apt_nm)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_lawd_ymd ON transaction_cache(lawd_cd, deal_ymd)`);
@@ -109,6 +111,8 @@ db.exec(`
 // jibun 컬럼이 없으면 추가 (기존 DB 마이그레이션)
 try { db.exec(`ALTER TABLE rent_cache ADD COLUMN jibun TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
 try { db.exec(`ALTER TABLE rent_cache ADD COLUMN kapt_code TEXT`); } catch(e) { /* 이미 존재 */ }
+try { db.exec(`ALTER TABLE rent_cache ADD COLUMN cdeal_type TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
+try { db.exec(`ALTER TABLE rent_cache ADD COLUMN cdeal_day TEXT DEFAULT ''`); } catch(e) { /* 이미 존재 */ }
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_apt ON rent_cache(lawd_cd, apt_nm)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rent_lawd_ymd ON rent_cache(lawd_cd, deal_ymd)`);
@@ -192,6 +196,26 @@ db.exec(`
   )
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_apt_alias_kapt ON apt_alias(kapt_code)`);
+
+// ── 마이그레이션 마커 ────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS migrations (
+    key        TEXT PRIMARY KEY,
+    applied_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+
+// 2026-04-18: kapt_code/cdeal_* 저장 로직 추가 배포. 기존 캐시 lazy 재fetch를 위해
+// api_fetch_log / rent_fetch_log 1회 초기화 (이후 쿼리 시 TTL 만료로 자동 재적재).
+(() => {
+  const migKey = "20260418_kapt_code_backfill";
+  const applied = db.prepare("SELECT 1 FROM migrations WHERE key = ?").get(migKey);
+  if (applied) return;
+  const txn = db.prepare("DELETE FROM api_fetch_log").run();
+  const rent = db.prepare("DELETE FROM rent_fetch_log").run();
+  db.prepare("INSERT INTO migrations (key) VALUES (?)").run(migKey);
+  console.log(`[MIGRATION] ${migKey}: api_fetch_log ${txn.changes}건, rent_fetch_log ${rent.changes}건 초기화 (lazy backfill 트리거)`);
+})();
 
 // ── 법정동코드 시딩 ──────────────────────────────────────────────
 const regionCount = db.prepare("SELECT COUNT(*) as cnt FROM region_codes").get();
@@ -488,13 +512,24 @@ async function throttledBatchFetch(months, lawdCd, ensureFn, { batchSize = 5, de
 // 동시성 제어: 동일 키에 대한 중복 MOLIT 호출 방지
 const _cacheInflight = new Map();
 
+// 신고 마감 30일 + 해제 거래 가능성 때문에 최근 3개월은 짧은 TTL(1일)로 재fetch.
+// 그보다 오래된 월은 영구 캐시 (한번 적재 후 안정적으로 고정).
+function getCacheTtl(dealYmd) {
+  const yy = parseInt(dealYmd.slice(0, 4));
+  const mm = parseInt(dealYmd.slice(4, 6));
+  const today = new Date();
+  const monthsAgo = (today.getFullYear() - yy) * 12 + (today.getMonth() + 1 - mm);
+  return monthsAgo <= 3 ? 86400 : Infinity;
+}
+
 async function ensureCached(lawdCd, dealYmd) {
   const log = db.prepare("SELECT fetched_at FROM api_fetch_log WHERE lawd_cd = ? AND deal_ymd = ?").get(lawdCd, dealYmd);
   const now = Math.floor(Date.now() / 1000);
   const currentYm = new Date().toISOString().slice(0, 7).replace("-", "");
   const isCurrentMonth = dealYmd === currentYm;
 
-  if (log && (!isCurrentMonth || (now - log.fetched_at) < 86400)) {
+  const ttl = getCacheTtl(dealYmd);
+  if (log && (now - log.fetched_at) < ttl) {
     return; // 캐시 유효
   }
 
@@ -508,11 +543,16 @@ async function ensureCached(lawdCd, dealYmd) {
     const items = await fetchMolitData(lawdCd, dealYmd);
     const insert = db.prepare(`
       INSERT OR IGNORE INTO transaction_cache
-      (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (lawd_cd, deal_ymd, apt_nm, apt_dong, exclu_use_ar, deal_amount, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day, kapt_code, cdeal_type, cdeal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tx = db.transaction(() => {
+      // 월 단위 재적재: 해제 거래·가격 정정을 반영하기 위해 기존 캐시 제거 후 재삽입.
+      // API가 빈 응답을 반환한 경우는 기존 데이터를 보존 (네트워크/키 이슈 가능성).
+      if (items.length > 0) {
+        db.prepare("DELETE FROM transaction_cache WHERE lawd_cd = ? AND deal_ymd = ?").run(lawdCd, dealYmd);
+      }
       for (const item of items) {
         const amount = parseInt(String(item.dealAmount || "0").replace(/,/g, "").trim());
         const area = parseFloat(item.excluUseAr || 0);
@@ -521,6 +561,9 @@ async function ensureCached(lawdCd, dealYmd) {
         const bonbun = String(item.bonbun || "").replace(/^0+/, "").trim();
         const bubun = String(item.bubun || "").replace(/^0+/, "").trim();
         const jibun = bonbun ? (bubun && bubun !== "0" ? `${bonbun}-${bubun}` : bonbun) : String(item.jibun || "").trim();
+        const kaptCode = String(item.aptSeq || "").trim() || null;
+        const cdealType = String(item.cdealType || "").trim();
+        const cdealDay = String(item.cdealDay || "").trim();
         insert.run(
           lawdCd, dealYmd,
           String(item.aptNm).trim(),
@@ -532,7 +575,10 @@ async function ensureCached(lawdCd, dealYmd) {
           jibun,
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
-          parseInt(item.dealDay) || null
+          parseInt(item.dealDay) || null,
+          kaptCode,
+          cdealType,
+          cdealDay
         );
       }
       // 데이터가 있거나 현재 월일 때만 로그 기록 (과거 월 빈 결과는 다음에 재시도)
@@ -563,7 +609,8 @@ async function ensureRentCached(lawdCd, dealYmd) {
   const currentYm = new Date().toISOString().slice(0, 7).replace("-", "");
   const isCurrentMonth = dealYmd === currentYm;
 
-  if (log && (!isCurrentMonth || (now - log.fetched_at) < 86400)) {
+  const ttl = getCacheTtl(dealYmd);
+  if (log && (now - log.fetched_at) < ttl) {
     return;
   }
 
@@ -616,11 +663,14 @@ async function ensureRentCached(lawdCd, dealYmd) {
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO rent_cache
-      (lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (lawd_cd, deal_ymd, apt_nm, exclu_use_ar, deposit, monthly_rent, floor, build_year, umd_nm, jibun, deal_year, deal_month, deal_day, kapt_code, cdeal_type, cdeal_day)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tx = db.transaction(() => {
+      if (list.length > 0) {
+        db.prepare("DELETE FROM rent_cache WHERE lawd_cd = ? AND deal_ymd = ?").run(lawdCd, dealYmd);
+      }
       for (const item of list) {
         const deposit = parseInt(String(item.deposit || "0").replace(/,/g, ""));
         const monthly = parseInt(String(item.monthlyRent || "0").replace(/,/g, ""));
@@ -630,6 +680,9 @@ async function ensureRentCached(lawdCd, dealYmd) {
         const bonbun = String(item.bonbun || "").replace(/^0+/, "").trim();
         const bubun = String(item.bubun || "").replace(/^0+/, "").trim();
         const jibun = bonbun ? (bubun && bubun !== "0" ? `${bonbun}-${bubun}` : bonbun) : String(item.jibun || "").trim();
+        const kaptCode = String(item.aptSeq || "").trim() || null;
+        const cdealType = String(item.cdealType || "").trim();
+        const cdealDay = String(item.cdealDay || "").trim();
         insert.run(
           lawdCd, dealYmd,
           String(item.aptNm).trim(),
@@ -640,7 +693,10 @@ async function ensureRentCached(lawdCd, dealYmd) {
           jibun,
           parseInt(item.dealYear) || null,
           parseInt(item.dealMonth) || null,
-          parseInt(item.dealDay) || null
+          parseInt(item.dealDay) || null,
+          kaptCode,
+          cdealType,
+          cdealDay
         );
       }
       // 데이터가 있거나 현재 월일 때만 로그 기록 (과거 월 빈 결과는 다음에 재시도)
@@ -669,7 +725,8 @@ async function ensureRentCached(lawdCd, dealYmd) {
  */
 function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, area, monthList, kaptCode } = {}, orderBy = "") {
   const buildFilters = () => {
-    let where = "";
+    // 해제 거래(cdealType='O')는 항상 제외
+    let where = " AND (cdeal_type IS NULL OR cdeal_type <> 'O')";
     const params = [];
     if (buildYear) { where += " AND build_year = ?"; params.push(parseInt(buildYear)); }
     if (area && area !== "전체") {
@@ -1310,10 +1367,11 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
       areaBinds = [areaValues[0] - 5, areaValues[0] + 5];
     }
 
-    // 구 내 동일 평수 모든 거래
+    // 구 내 동일 평수 모든 거래 (해제 거래 제외)
     const guRows = db.prepare(`
       SELECT deal_amount, umd_nm FROM transaction_cache
       WHERE lawd_cd = ? AND ${areaWhere}
+        AND (cdeal_type IS NULL OR cdeal_type <> 'O')
     `).all(lawdCd, ...areaBinds);
 
     const guPrices = guRows.map(r => r.deal_amount);
@@ -1341,6 +1399,7 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
       SELECT umd_nm, AVG(deal_amount) as avg_price, COUNT(*) as cnt
       FROM transaction_cache
       WHERE lawd_cd = ? AND ${areaWhere}
+        AND (cdeal_type IS NULL OR cdeal_type <> 'O')
       GROUP BY umd_nm
       HAVING cnt >= 2
     `).all(lawdCd, ...areaBinds);
