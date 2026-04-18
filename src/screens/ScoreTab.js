@@ -66,16 +66,24 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setSearchResults([]);
     setTxExpanded(false);
     allDataCache.current = { transactions: null, rent: null };
+    areaPillLayouts.current = {};
     if (allTimePollRef.current) { clearInterval(allTimePollRef.current); allTimePollRef.current = null; }
     if (selectedProp?.lawdCd) {
       // 저장된 매물 재접속: 평수·실거래·전월세 모두 재로드해 stale 데이터를 최신으로 갱신
+      const reqId = ++selectRequestId.current;
       const kapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
       const jibun = selectedProp.complexInfo?.jibun || null;
       const umd = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
       const savedArea = selectedProp.selectedArea || "전체";
+      const savedGroup = selectedProp.selectedAreaGroup;
+      // 서버는 전용면적 리스트를 기대. savedArea는 UI 표시용 키(공급면적)이므로
+      // selectedAreaGroup.groupedExclusiveAreas로 변환해 전달한다.
+      const areaParam = savedArea === "전체"
+        ? "전체"
+        : (savedGroup?.groupedExclusiveAreas?.join(",") || savedArea);
       loadAreas(selectedProp.name, selectedProp.lawdCd, selectedProp.buildYear, umd, jibun, kapt);
-      loadTransactionData(selectedProp.name, selectedProp.lawdCd, savedArea, umd, selectedProp.buildYear, selectedProp.guNm, null, jibun, kapt);
-      loadRentData(selectedProp.name, selectedProp.lawdCd, savedArea, selectedProp.buildYear, null, umd, jibun, kapt);
+      loadTransactionData(selectedProp.name, selectedProp.lawdCd, areaParam, umd, selectedProp.buildYear, selectedProp.guNm, reqId, jibun, kapt);
+      loadRentData(selectedProp.name, selectedProp.lawdCd, areaParam, selectedProp.buildYear, reqId, umd, jibun, kapt);
       setSelectedArea(savedArea);
     } else {
       setAreas([]);
@@ -295,6 +303,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       }
       setSelectedArea("전체");
       updateProp(selectedProp.id, "selectedArea", "전체");
+      updateProp(selectedProp.id, "selectedAreaGroup", null);
     } catch (e) {
       console.warn("매물 정보 로드 실패:", e.message);
     } finally {
@@ -403,7 +412,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setAreaLoading(true);
     try {
       if (isAll) {
-        // "전체"는 캐시에서 바로 복원
+        // "전체"는 캐시에서 바로 복원. 캐시가 없으면 서버 폴백.
         const cachedTx = allDataCache.current.transactions;
         const cachedRent = allDataCache.current.rent;
         if (cachedTx) {
@@ -419,6 +428,16 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         if (cachedRent) {
           updateProp(selectedProp.id, "jeonseData", cachedRent.jeonse || { transactions: [], dongSummary: [] });
           updateProp(selectedProp.id, "wolseData", cachedRent.wolse || { transactions: [], dongSummary: [] });
+        }
+        // 캐시 누락 시 서버에서 재조회 (저장된 매물을 특정 평수 필터 상태로 복원한 직후 "전체" 탭 등)
+        if (!cachedTx || !cachedRent) {
+          const propJibun = selectedProp.complexInfo?.jibun || null;
+          const propUmdNm = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
+          const propKapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
+          await Promise.allSettled([
+            !cachedTx && loadTransactionData(selectedProp.name, selectedProp.lawdCd, "전체", propUmdNm, selectedProp.buildYear, selectedProp.guNm, null, propJibun, propKapt),
+            !cachedRent && loadRentData(selectedProp.name, selectedProp.lawdCd, "전체", selectedProp.buildYear, null, propUmdNm, propJibun, propKapt),
+          ].filter(Boolean));
         }
       } else {
         // 특정 평수: 그룹의 모든 전용면적을 콤마 구분으로 서버에 전달
