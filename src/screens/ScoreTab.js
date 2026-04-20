@@ -74,7 +74,7 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
     setTxExpanded(false);
     allDataCache.current = { transactions: null, rent: null };
     areaPillLayouts.current = {};
-    if (allTimePollRef.current) { clearInterval(allTimePollRef.current); allTimePollRef.current = null; }
+    if (allTimePollRef.current) { clearTimeout(allTimePollRef.current); allTimePollRef.current = null; }
     if (selectedProp?.lawdCd) {
       // 저장된 매물 재접속: 평수·실거래·전월세 모두 재로드해 stale 데이터를 최신으로 갱신
       const reqId = ++selectRequestId.current;
@@ -495,13 +495,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       setPriceRangeStart(null);
       setPriceRangeEnd(null);
       setAppliedRange(null);
-      if (allTimePollRef.current) clearInterval(allTimePollRef.current);
+      if (allTimePollRef.current) { clearTimeout(allTimePollRef.current); allTimePollRef.current = null; }
       const propId = selectedProp.id;
-      allTimePollRef.current = setInterval(async () => {
+
+      // 재귀적 setTimeout 폴링: 즉시 첫 시도, 네트워크 에러 시 백오프 재시도, 성공 시 종료
+      let attemptIdx = 0;
+      const backoffMs = [3000, 6000, 12000, 24000]; // 네트워크 에러 시에만 사용
+      const tryPoll = async () => {
+        if (reqId && selectRequestId.current !== reqId) return; // 매물 전환됨 — 중단
         try {
-          if (reqId && selectRequestId.current !== reqId) {
-            clearInterval(allTimePollRef.current); allTimePollRef.current = null; return;
-          }
           const result = await getAllTimePriceRange(lawdCd, aptNm, areaParam, buildYear, umdNm, jibun, kaptCode);
           if (result.status === "done" && result.allTimePriceRange) {
             updateProp(propId, "allTimePriceRange", result.allTimePriceRange);
@@ -514,14 +516,19 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               setPriceRangeEnd({ year: ly, month: lm });
               setAppliedRange({ start: { year: fy, month: fm }, end: { year: ly, month: lm } });
             }
-            clearInterval(allTimePollRef.current); allTimePollRef.current = null;
-          } else if (result.status === "error") {
-            clearInterval(allTimePollRef.current); allTimePollRef.current = null;
+            return; // 종료 — UI fallback이 bounds 처리
           }
+          if (result.status === "error") return; // 종료
+          // status === "loading": 백그라운드 캐싱 진행 중 — 3초 후 재폴
+          attemptIdx = 0;
+          allTimePollRef.current = setTimeout(tryPoll, 3000);
         } catch {
-          clearInterval(allTimePollRef.current); allTimePollRef.current = null;
+          // 네트워크 에러: 백오프 재시도 (최대 4회)
+          if (attemptIdx >= backoffMs.length) return; // 포기 — UI fallback 사용
+          allTimePollRef.current = setTimeout(tryPoll, backoffMs[attemptIdx++]);
         }
-      }, 3000);
+      };
+      tryPoll(); // 즉시 첫 시도
 
       // 지역 시세 분석 (fire-and-forget: 매매 데이터 먼저 표시, 분석은 백그라운드)
       if (data.dongSummary && data.dongSummary.length > 0) {
@@ -994,23 +1001,26 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
 
           {/* 최고·최저 거래가 (사용자 지정 기간) */}
           {(dataCollecting || areaLoading) ? null : selectedProp.dongSummary?.length > 0 && (() => {
-            const bounds = selectedProp.priceRangeBounds;
+            const serverBounds = selectedProp.priceRangeBounds;
             const allTime = selectedProp.allTimePriceRange;
-            const isInitialLoading = !bounds || !priceRangeStart || !priceRangeEnd;
 
-            // 슬라이더 경계 (bounds로부터 파생)
-            const minYM = bounds ? (() => {
-              const [y, m] = bounds.firstDate.split(".").map(Number);
-              return { year: y, month: m };
-            })() : null;
-            const maxYM = bounds ? (() => {
-              const [y, m] = bounds.lastDate.split(".").map(Number);
-              return { year: y, month: m };
-            })() : null;
+            // Fallback bounds — transactionHistory(최근 12개월)에서 파생
+            // 서버 폴링이 늦거나 실패해도 picker가 즉시 동작
+            const txDates = (selectedProp.transactionHistory || [])
+              .map(t => t.dealDate).filter(Boolean).sort();
+            const fallbackBounds = txDates.length > 0
+              ? { firstDate: txDates[0], lastDate: txDates[txDates.length - 1] }
+              : null;
+            const bounds = serverBounds || fallbackBounds;
+            const isAllTimeLoaded = !!serverBounds; // 서버 alltime 데이터 도착 여부
+
+            // 슬라이더 경계
+            const parseYM = (s) => { const [y, m] = s.split(".").map(Number); return { year: y, month: m }; };
+            const minYM = bounds ? parseYM(bounds.firstDate) : null;
+            const maxYM = bounds ? parseYM(bounds.lastDate) : null;
 
             // ym → 정수 (비교용)
             const ymInt = (ym) => ym.year * 100 + ym.month;
-            // ym 증감
             const stepYM = (ym, delta) => {
               let total = ym.year * 12 + (ym.month - 1) + delta;
               return { year: Math.floor(total / 12), month: (total % 12) + 1 };
@@ -1027,10 +1037,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               return `${s.year}.${String(s.month).padStart(2, "0")}.01 ~ ${e.year}.${String(e.month).padStart(2, "0")}.${String(endLastDay).padStart(2, "0")}`;
             };
 
-            // 사용자가 슬라이더를 변경했는지 (마지막 조회 기준과 비교)
-            const rangeChanged = appliedRange && priceRangeStart && priceRangeEnd && (
-              ymInt(priceRangeStart) !== ymInt(appliedRange.start) ||
-              ymInt(priceRangeEnd) !== ymInt(appliedRange.end)
+            // picker 표시값: 사용자 선택 우선, 없으면 bounds 자동 적용
+            const startYM = priceRangeStart || minYM;
+            const endYM = priceRangeEnd || maxYM;
+
+            // 변경 감지 기준: 마지막 조회 기준 또는 (없으면) 초기 전체 범위
+            const baseRange = appliedRange || (minYM && maxYM ? { start: minYM, end: maxYM } : null);
+            const rangeChanged = baseRange && startYM && endYM && (
+              ymInt(startYM) !== ymInt(baseRange.start) ||
+              ymInt(endYM) !== ymInt(baseRange.end)
             );
 
             const ds = selectedProp.dongSummary;
@@ -1049,10 +1064,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               <View style={styles.card}>
                 <Text style={styles.sectionTitle}>📈 최고·최저 거래가</Text>
 
-                {isInitialLoading ? (
+                {!bounds ? (
                   <View style={{ alignItems: "center", paddingVertical: 24 }}>
                     <ActivityIndicator size="small" color="#6366f1" />
-                    <Text style={{ color: COLORS.textFaint, marginTop: 8, fontSize: 13 }}>전체 기간 거래가 조회 중...</Text>
+                    <Text style={{ color: COLORS.textFaint, marginTop: 8, fontSize: 13 }}>거래 데이터 조회 중...</Text>
                   </View>
                 ) : (
                 <>
@@ -1062,43 +1077,46 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                       <Text style={styles.dateRangeLabel}>시작</Text>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, -12), minYM, priceRangeEnd))}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, -12), minYM, endYM))}
                       ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, -1), minYM, priceRangeEnd))}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, -1), minYM, endYM))}
                       ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
-                      <Text style={styles.dateRangeValue}>{fmtYM(priceRangeStart)}</Text>
+                      <Text style={styles.dateRangeValue}>{fmtYM(startYM)}</Text>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, 1), minYM, priceRangeEnd))}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, 1), minYM, endYM))}
                       ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, 12), minYM, priceRangeEnd))}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, 12), minYM, endYM))}
                       ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
                     </View>
                     <View style={styles.dateRangeRow}>
                       <Text style={styles.dateRangeLabel}>종료</Text>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, -12), priceRangeStart, maxYM))}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, -12), startYM, maxYM))}
                       ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, -1), priceRangeStart, maxYM))}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, -1), startYM, maxYM))}
                       ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
-                      <Text style={styles.dateRangeValue}>{fmtYM(priceRangeEnd)}</Text>
+                      <Text style={styles.dateRangeValue}>{fmtYM(endYM)}</Text>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, 1), priceRangeStart, maxYM))}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, 1), startYM, maxYM))}
                       ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
                       <TouchableOpacity
                         style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, 12), priceRangeStart, maxYM))}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, 12), startYM, maxYM))}
                       ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
                     </View>
-                    <Text style={styles.dateRangeHint}>전체 거래 범위: {bounds.firstDate} ~ {bounds.lastDate}</Text>
+                    <Text style={styles.dateRangeHint}>
+                      거래 범위: {bounds.firstDate} ~ {bounds.lastDate}
+                      {!isAllTimeLoaded && " (전체 기간 데이터 로딩 중...)"}
+                    </Text>
                   </View>
 
                   {/* 변경됨 시 안내 + 조회 버튼 */}
