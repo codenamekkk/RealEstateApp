@@ -723,7 +723,7 @@ async function ensureRentCached(lawdCd, dealYmd) {
  * jibun이 있으면: lawd_cd + umd_nm + jibun으로 정확 매칭 (이름 무관)
  * jibun이 없으면: 기존 apt_nm 기반 매칭 (fallback)
  */
-function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, area, monthList, kaptCode } = {}, orderBy = "") {
+function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, area, monthList, kaptCode, startDate, endDate } = {}, orderBy = "") {
   const buildFilters = () => {
     // 해제 거래(cdealType='O')는 항상 제외
     let where = " AND (cdeal_type IS NULL OR cdeal_type <> 'O')";
@@ -744,6 +744,15 @@ function queryByJibun(db, tableName, lawdCd, { umdNm, jibun, aptNm, buildYear, a
     if (monthList && monthList.length > 0) {
       where += ` AND deal_ymd IN (${monthList.map(() => "?").join(",")})`;
       params.push(...monthList);
+    }
+    // 날짜 범위(YYYYMMDD): 사용자 지정 임의 기간 필터
+    if (startDate) {
+      where += " AND (deal_year * 10000 + deal_month * 100 + deal_day) >= ?";
+      params.push(parseInt(startDate));
+    }
+    if (endDate) {
+      where += " AND (deal_year * 10000 + deal_month * 100 + deal_day) <= ?";
+      params.push(parseInt(endDate));
     }
     return { where, params };
   };
@@ -1233,9 +1242,11 @@ app.get("/api/apartment/transactions", async (req, res) => {
   }
 });
 
-// ── 전체기간 최고/최저가 조회 (백그라운드 캐싱 완료 후 폴링) ────────────
+// ── 기간별 최고/최저가 조회 (백그라운드 캐싱 완료 후 폴링) ──────────────
+// startDate/endDate(YYYYMMDD) 미지정 시: 전체기간
+// 항상 firstDate/lastDate(전체 거래의 최소·최대 날짜)를 반환해 슬라이더 경계로 사용
 app.get("/api/apartment/alltime-price-range", async (req, res) => {
-  const { lawdCd, aptNm, area, buildYear, umdNm, jibun, kaptCode } = req.query;
+  const { lawdCd, aptNm, area, buildYear, umdNm, jibun, kaptCode, startDate, endDate } = req.query;
   if (!lawdCd) return res.status(400).json({ error: "lawdCd 필수" });
 
   try {
@@ -1261,19 +1272,39 @@ app.get("/api/apartment/alltime-price-range", async (req, res) => {
       area: r.exclu_use_ar,
     } : null;
 
-    const allTimeRows = queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear, area, kaptCode }, ` ORDER BY deal_amount DESC`);
-    const allTimeHighest = allTimeRows.length > 0 ? allTimeRows[0] : null;
-    const allTimeLowest = allTimeRows.length > 0 ? allTimeRows[allTimeRows.length - 1] : null;
+    // 전체 데이터의 첫/마지막 거래일 — 슬라이더 경계용 (날짜 필터 미적용)
+    const allRows = queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear, area, kaptCode });
+    let firstDate = null, lastDate = null;
+    if (allRows.length > 0) {
+      let minK = Infinity, maxK = -Infinity, minR = null, maxR = null;
+      for (const r of allRows) {
+        const k = r.deal_year * 10000 + r.deal_month * 100 + r.deal_day;
+        if (k < minK) { minK = k; minR = r; }
+        if (k > maxK) { maxK = k; maxR = r; }
+      }
+      firstDate = `${minR.deal_year}.${String(minR.deal_month).padStart(2, "0")}.${String(minR.deal_day).padStart(2, "0")}`;
+      lastDate = `${maxR.deal_year}.${String(maxR.deal_month).padStart(2, "0")}.${String(maxR.deal_day).padStart(2, "0")}`;
+    }
+
+    // 기간 필터 적용 후 최고·최저
+    const filteredRows = (startDate || endDate)
+      ? queryByJibun(db, "transaction_cache", lawdCd, { umdNm, jibun, aptNm, buildYear, area, kaptCode, startDate, endDate }, ` ORDER BY deal_amount DESC`)
+      : allRows.slice().sort((a, b) => b.deal_amount - a.deal_amount);
+    const highest = filteredRows.length > 0 ? filteredRows[0] : null;
+    const lowest = filteredRows.length > 0 ? filteredRows[filteredRows.length - 1] : null;
 
     res.json({
       status: "done",
       allTimePriceRange: {
-        highest: formatRow(allTimeHighest),
-        lowest: formatRow(allTimeLowest),
+        highest: formatRow(highest),
+        lowest: formatRow(lowest),
       },
+      firstDate,
+      lastDate,
+      totalCount: filteredRows.length,
     });
   } catch (e) {
-    console.error("전체기간 가격 조회 실패:", e.message);
+    console.error("기간별 가격 조회 실패:", e.message);
     res.status(500).json({ status: "error", message: e.message });
   }
 });

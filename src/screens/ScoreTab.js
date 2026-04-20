@@ -49,8 +49,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   const [complexInfoLoading, setComplexInfoLoading] = useState(false);
   const [txTab, setTxTab] = useState("매매"); // 매매/전세/월세
   const [txExpanded, setTxExpanded] = useState(false);
-  const [priceRangeTab, setPriceRangeTab] = useState("최근 1년"); // 최근 1년/전체기간
   const [areaLoading, setAreaLoading] = useState(false);
+
+  // 기간별 최고·최저가 조회 UI 상태
+  // priceRangeStart/End: { year, month } — 사용자가 슬라이더로 선택한 기간
+  // appliedRange: 마지막 '조회'에서 사용된 기간 (현재 카드에 표시 중인 데이터의 기간)
+  const [priceRangeStart, setPriceRangeStart] = useState(null);
+  const [priceRangeEnd, setPriceRangeEnd] = useState(null);
+  const [appliedRange, setAppliedRange] = useState(null);
+  const [priceQueryLoading, setPriceQueryLoading] = useState(false);
 
   // 전체 데이터 캐시 (평수 변경 시 클라이언트 필터링용)
   const allDataCache = useRef({ transactions: null, rent: null });
@@ -482,8 +489,12 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
         updateProp(selectedProp.id, "lowestPrice", lowestPrice);
       }
 
-      // 전체기간 최고/최저가: 백그라운드 캐싱 완료 후 폴링으로 조회
+      // 전체기간 최고/최저가 + 첫·마지막 거래일: 백그라운드 캐싱 완료 후 폴링으로 조회
       updateProp(selectedProp.id, "allTimePriceRange", null);
+      updateProp(selectedProp.id, "priceRangeBounds", null);
+      setPriceRangeStart(null);
+      setPriceRangeEnd(null);
+      setAppliedRange(null);
       if (allTimePollRef.current) clearInterval(allTimePollRef.current);
       const propId = selectedProp.id;
       allTimePollRef.current = setInterval(async () => {
@@ -494,6 +505,15 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
           const result = await getAllTimePriceRange(lawdCd, aptNm, areaParam, buildYear, umdNm, jibun, kaptCode);
           if (result.status === "done" && result.allTimePriceRange) {
             updateProp(propId, "allTimePriceRange", result.allTimePriceRange);
+            if (result.firstDate && result.lastDate) {
+              const bounds = { firstDate: result.firstDate, lastDate: result.lastDate };
+              updateProp(propId, "priceRangeBounds", bounds);
+              const [fy, fm] = result.firstDate.split(".").map(Number);
+              const [ly, lm] = result.lastDate.split(".").map(Number);
+              setPriceRangeStart({ year: fy, month: fm });
+              setPriceRangeEnd({ year: ly, month: lm });
+              setAppliedRange({ start: { year: fy, month: fm }, end: { year: ly, month: lm } });
+            }
             clearInterval(allTimePollRef.current); allTimePollRef.current = null;
           } else if (result.status === "error") {
             clearInterval(allTimePollRef.current); allTimePollRef.current = null;
@@ -523,6 +543,39 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       }
     } catch (e) {
       console.warn("실거래 데이터 로드 실패:", e.message);
+    }
+  }
+
+  // 사용자 지정 기간으로 최고·최저가 조회
+  async function handleQueryPriceRange() {
+    if (!selectedProp || !priceRangeStart || !priceRangeEnd) return;
+    if (!selectedProp.lawdCd) return;
+    const startStr = `${priceRangeStart.year}${String(priceRangeStart.month).padStart(2, "0")}01`;
+    // 종료 월의 마지막 날
+    const endLastDay = new Date(priceRangeEnd.year, priceRangeEnd.month, 0).getDate();
+    const endStr = `${priceRangeEnd.year}${String(priceRangeEnd.month).padStart(2, "0")}${String(endLastDay).padStart(2, "0")}`;
+    const kapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
+    const jibun = selectedProp.complexInfo?.jibun || null;
+    const umd = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
+    const savedArea = selectedProp.selectedArea || "전체";
+    const savedGroup = selectedProp.selectedAreaGroup;
+    const areaParam = savedArea === "전체"
+      ? "전체"
+      : (savedGroup?.groupedExclusiveAreas?.join(",") || savedArea);
+    setPriceQueryLoading(true);
+    try {
+      const result = await getAllTimePriceRange(
+        selectedProp.lawdCd, selectedProp.name, areaParam, selectedProp.buildYear,
+        umd, jibun, kapt, startStr, endStr
+      );
+      if (result.status === "done" && result.allTimePriceRange) {
+        updateProp(selectedProp.id, "allTimePriceRange", result.allTimePriceRange);
+        setAppliedRange({ start: priceRangeStart, end: priceRangeEnd });
+      }
+    } catch (e) {
+      console.warn("기간별 거래가 조회 실패:", e.message);
+    } finally {
+      setPriceQueryLoading(false);
     }
   }
 
@@ -939,60 +992,157 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             </View>
           ) : null}
 
-          {/* 최고/최저 거래가 */}
+          {/* 최고·최저 거래가 (사용자 지정 기간) */}
           {(dataCollecting || areaLoading) ? null : selectedProp.dongSummary?.length > 0 && (() => {
+            const bounds = selectedProp.priceRangeBounds;
+            const allTime = selectedProp.allTimePriceRange;
+            const isInitialLoading = !bounds || !priceRangeStart || !priceRangeEnd;
+
+            // 슬라이더 경계 (bounds로부터 파생)
+            const minYM = bounds ? (() => {
+              const [y, m] = bounds.firstDate.split(".").map(Number);
+              return { year: y, month: m };
+            })() : null;
+            const maxYM = bounds ? (() => {
+              const [y, m] = bounds.lastDate.split(".").map(Number);
+              return { year: y, month: m };
+            })() : null;
+
+            // ym → 정수 (비교용)
+            const ymInt = (ym) => ym.year * 100 + ym.month;
+            // ym 증감
+            const stepYM = (ym, delta) => {
+              let total = ym.year * 12 + (ym.month - 1) + delta;
+              return { year: Math.floor(total / 12), month: (total % 12) + 1 };
+            };
+            const clamp = (ym, lo, hi) => {
+              const v = ymInt(ym), l = ymInt(lo), h = ymInt(hi);
+              if (v < l) return lo;
+              if (v > h) return hi;
+              return ym;
+            };
+            const fmtYM = (ym) => `${ym.year}.${String(ym.month).padStart(2, "0")}`;
+            const fmtDateRangeStr = (s, e) => {
+              const endLastDay = new Date(e.year, e.month, 0).getDate();
+              return `${s.year}.${String(s.month).padStart(2, "0")}.01 ~ ${e.year}.${String(e.month).padStart(2, "0")}.${String(endLastDay).padStart(2, "0")}`;
+            };
+
+            // 사용자가 슬라이더를 변경했는지 (마지막 조회 기준과 비교)
+            const rangeChanged = appliedRange && priceRangeStart && priceRangeEnd && (
+              ymInt(priceRangeStart) !== ymInt(appliedRange.start) ||
+              ymInt(priceRangeEnd) !== ymInt(appliedRange.end)
+            );
+
             const ds = selectedProp.dongSummary;
             const recentHighest = ds.reduce((max, d) => (d.highestPrice || 0) > (max.highestPrice || 0) ? d : max, ds[0]);
             const recentLowest = ds.reduce((min, d) => (d.lowestPrice || Infinity) < (min.lowestPrice || Infinity) ? d : min, ds[0]);
-            const allTime = selectedProp.allTimePriceRange;
-            const isAllTimeLoading = priceRangeTab === "전체기간" && !allTime?.highest;
-            const isAllTime = priceRangeTab === "전체기간" && allTime?.highest && allTime?.lowest;
-            const highest = isAllTime
+            const hasAllTime = allTime?.highest && allTime?.lowest;
+            const highest = hasAllTime
               ? { price: allTime.highest.price, date: allTime.highest.date, dong: allTime.highest.dong, floor: allTime.highest.floor, area: allTime.highest.area }
               : { price: recentHighest.highestPrice, date: recentHighest.highestDate, dong: recentHighest.dong, floor: recentHighest.highestFloor, area: recentHighest.area };
-            const lowest = isAllTime
+            const lowest = hasAllTime
               ? { price: allTime.lowest.price, date: allTime.lowest.date, dong: allTime.lowest.dong, floor: allTime.lowest.floor, area: allTime.lowest.area }
               : { price: recentLowest.lowestPrice, date: recentLowest.lowestDate, dong: recentLowest.dong, floor: recentLowest.lowestFloor, area: recentLowest.area };
             const gap = highest.price - lowest.price;
+
             return (
               <View style={styles.card}>
                 <Text style={styles.sectionTitle}>📈 최고·최저 거래가</Text>
-                <View style={styles.priceRangeTabRow}>
-                  {["최근 1년", "전체기간"].map(tab => (
-                    <TouchableOpacity
-                      key={tab}
-                      onPress={() => setPriceRangeTab(tab)}
-                      style={[styles.priceRangeTabBtn, priceRangeTab === tab && styles.priceRangeTabBtnActive]}
-                    >
-                      <Text style={[styles.priceRangeTabText, priceRangeTab === tab && styles.priceRangeTabTextActive]}>{tab}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                {isAllTimeLoading ? (
+
+                {isInitialLoading ? (
                   <View style={{ alignItems: "center", paddingVertical: 24 }}>
                     <ActivityIndicator size="small" color="#6366f1" />
                     <Text style={{ color: COLORS.textFaint, marginTop: 8, fontSize: 13 }}>전체 기간 거래가 조회 중...</Text>
                   </View>
                 ) : (
                 <>
-                <View style={styles.priceRangeRow}>
-                  <View style={[styles.priceRangeCard, { borderColor: "rgba(245,158,11,0.3)", backgroundColor: "rgba(245,158,11,0.08)" }]}>
-                    <Text style={[styles.priceRangeLabel, { color: "#f59e0b" }]}>최고 거래가</Text>
-                    <Text style={[styles.priceRangeValue, { color: "#f59e0b" }]}>{formatPrice(highest.price)}</Text>
-                    <Text style={styles.priceRangeMeta}>{highest.date} · {highest.dong}동 {highest.floor}층</Text>
-                    {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(highest.area)}평</Text>}
+                  {/* 기간 선택 컨트롤 */}
+                  <View style={styles.dateRangePicker}>
+                    <View style={styles.dateRangeRow}>
+                      <Text style={styles.dateRangeLabel}>시작</Text>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, -12), minYM, priceRangeEnd))}
+                      ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, -1), minYM, priceRangeEnd))}
+                      ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
+                      <Text style={styles.dateRangeValue}>{fmtYM(priceRangeStart)}</Text>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, 1), minYM, priceRangeEnd))}
+                      ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeStart(clamp(stepYM(priceRangeStart, 12), minYM, priceRangeEnd))}
+                      ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
+                    </View>
+                    <View style={styles.dateRangeRow}>
+                      <Text style={styles.dateRangeLabel}>종료</Text>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, -12), priceRangeStart, maxYM))}
+                      ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, -1), priceRangeStart, maxYM))}
+                      ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
+                      <Text style={styles.dateRangeValue}>{fmtYM(priceRangeEnd)}</Text>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, 1), priceRangeStart, maxYM))}
+                      ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.dateStepBtn}
+                        onPress={() => setPriceRangeEnd(clamp(stepYM(priceRangeEnd, 12), priceRangeStart, maxYM))}
+                      ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
+                    </View>
+                    <Text style={styles.dateRangeHint}>전체 거래 범위: {bounds.firstDate} ~ {bounds.lastDate}</Text>
                   </View>
-                  <View style={[styles.priceRangeCard, { borderColor: "rgba(59,130,246,0.3)", backgroundColor: "rgba(59,130,246,0.08)" }]}>
-                    <Text style={[styles.priceRangeLabel, { color: "#3b82f6" }]}>최저 거래가</Text>
-                    <Text style={[styles.priceRangeValue, { color: "#3b82f6" }]}>{formatPrice(lowest.price)}</Text>
-                    <Text style={styles.priceRangeMeta}>{lowest.date} · {lowest.dong}동 {lowest.floor}층</Text>
-                    {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(lowest.area)}평</Text>}
-                  </View>
-                </View>
-                <View style={styles.priceGapRow}>
-                  <Text style={styles.priceGapLabel}>가격 변동폭</Text>
-                  <Text style={styles.priceGapValue}>{formatPrice(gap)}</Text>
-                </View>
+
+                  {/* 변경됨 시 안내 + 조회 버튼 */}
+                  {rangeChanged && !priceQueryLoading && (
+                    <View style={styles.queryPrompt}>
+                      <Text style={styles.queryPromptText}>
+                        {fmtDateRangeStr(priceRangeStart, priceRangeEnd)} 사이의 거래가 정보를 확인하시겠습니까?
+                      </Text>
+                      <TouchableOpacity style={styles.queryBtn} onPress={handleQueryPriceRange}>
+                        <Text style={styles.queryBtnText}>조회</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {/* 결과 또는 로딩 */}
+                  {priceQueryLoading ? (
+                    <View style={{ alignItems: "center", paddingVertical: 24 }}>
+                      <ActivityIndicator size="small" color="#6366f1" />
+                      <Text style={{ color: COLORS.textFaint, marginTop: 8, fontSize: 13 }}>거래가 조회중...</Text>
+                    </View>
+                  ) : highest.price ? (
+                    <>
+                      <View style={styles.priceRangeRow}>
+                        <View style={[styles.priceRangeCard, { borderColor: "rgba(245,158,11,0.3)", backgroundColor: "rgba(245,158,11,0.08)" }]}>
+                          <Text style={[styles.priceRangeLabel, { color: "#f59e0b" }]}>최고 거래가</Text>
+                          <Text style={[styles.priceRangeValue, { color: "#f59e0b" }]}>{formatPrice(highest.price)}</Text>
+                          <Text style={styles.priceRangeMeta}>{highest.date} · {highest.dong}동 {highest.floor}층</Text>
+                          {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(highest.area)}평</Text>}
+                        </View>
+                        <View style={[styles.priceRangeCard, { borderColor: "rgba(59,130,246,0.3)", backgroundColor: "rgba(59,130,246,0.08)" }]}>
+                          <Text style={[styles.priceRangeLabel, { color: "#3b82f6" }]}>최저 거래가</Text>
+                          <Text style={[styles.priceRangeValue, { color: "#3b82f6" }]}>{formatPrice(lowest.price)}</Text>
+                          <Text style={styles.priceRangeMeta}>{lowest.date} · {lowest.dong}동 {lowest.floor}층</Text>
+                          {selectedArea === "전체" && <Text style={styles.priceRangeMeta}>{getSupplyPyeong(lowest.area)}평</Text>}
+                        </View>
+                      </View>
+                      <View style={styles.priceGapRow}>
+                        <Text style={styles.priceGapLabel}>가격 변동폭</Text>
+                        <Text style={styles.priceGapValue}>{formatPrice(gap)}</Text>
+                      </View>
+                    </>
+                  ) : (
+                    <Text style={styles.noDataText}>해당 기간에 거래 데이터가 없습니다.</Text>
+                  )}
                 </>
                 )}
               </View>
@@ -1231,12 +1381,19 @@ const styles = StyleSheet.create({
   txTabTextActive: { color: "#818cf8" },
   noDataText:    { color: COLORS.textFaint, fontSize: 12, textAlign: "center", paddingVertical: 20 },
 
-  // 최고/최저 거래가
-  priceRangeTabRow:    { flexDirection: "row", marginBottom: 12, gap: 6 },
-  priceRangeTabBtn:    { flex: 1, paddingVertical: 7, borderRadius: 8, borderWidth: 1.5, borderColor: "rgba(255,255,255,0.1)", alignItems: "center" },
-  priceRangeTabBtnActive: { borderColor: "#22c55e", backgroundColor: "rgba(34,197,94,0.12)" },
-  priceRangeTabText:   { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
-  priceRangeTabTextActive: { color: "#22c55e" },
+  // 최고/최저 거래가 - 기간 선택 컨트롤
+  dateRangePicker:     { marginBottom: 12, padding: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  dateRangeRow:        { flexDirection: "row", alignItems: "center", marginBottom: 6, gap: 4 },
+  dateRangeLabel:      { color: COLORS.textMuted, fontSize: 12, fontWeight: "700", width: 36 },
+  dateStepBtn:         { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" },
+  dateStepBtnText:     { color: COLORS.textMuted, fontSize: 14, fontWeight: "700" },
+  dateRangeValue:      { color: COLORS.text, fontSize: 14, fontWeight: "700", flex: 1, textAlign: "center" },
+  dateRangeHint:       { color: COLORS.textFaint, fontSize: 11, marginTop: 4, textAlign: "center" },
+  // 조회 안내·버튼
+  queryPrompt:         { marginBottom: 12, padding: 10, borderRadius: 8, backgroundColor: "rgba(99,102,241,0.08)", borderWidth: 1, borderColor: "rgba(99,102,241,0.25)" },
+  queryPromptText:     { color: COLORS.text, fontSize: 12, marginBottom: 8, lineHeight: 18 },
+  queryBtn:            { paddingVertical: 9, borderRadius: 8, backgroundColor: "#6366f1", alignItems: "center" },
+  queryBtnText:        { color: "#fff", fontSize: 13, fontWeight: "700" },
   priceRangeRow:   { flexDirection: "row", gap: 10, marginBottom: 12 },
   priceRangeCard:  { flex: 1, borderWidth: 1.5, borderRadius: 12, padding: 14, alignItems: "center" },
   priceRangeLabel: { fontSize: 11, fontWeight: "700", marginBottom: 6 },

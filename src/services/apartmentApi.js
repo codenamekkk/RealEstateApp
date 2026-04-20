@@ -37,15 +37,17 @@ export async function getTransactions(aptNm, lawdCd, area = "전체", months = 1
   return res.json();
 }
 
-export async function getAllTimePriceRange(lawdCd, aptNm, area, buildYear, umdNm, jibun, kaptCode) {
+export async function getAllTimePriceRange(lawdCd, aptNm, area, buildYear, umdNm, jibun, kaptCode, startDate, endDate) {
   let url = `${SERVER_URL}/api/apartment/alltime-price-range?lawdCd=${lawdCd}&area=${encodeURIComponent(area || "전체")}`;
   if (aptNm) url += `&aptNm=${encodeURIComponent(aptNm)}`;
   if (buildYear) url += `&buildYear=${buildYear}`;
   if (umdNm) url += `&umdNm=${encodeURIComponent(umdNm)}`;
   if (jibun) url += `&jibun=${encodeURIComponent(jibun)}`;
   if (kaptCode) url += `&kaptCode=${encodeURIComponent(kaptCode)}`;
+  if (startDate) url += `&startDate=${startDate}`;
+  if (endDate) url += `&endDate=${endDate}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error("전체기간 조회 실패");
+  if (!res.ok) throw new Error("기간별 거래가 조회 실패");
   return res.json();
 }
 
