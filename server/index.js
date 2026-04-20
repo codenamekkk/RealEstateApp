@@ -1385,6 +1385,9 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const months = getMonthRange(12);
     await Promise.all(months.map(ym => ensureCached(lawdCd, ym)));
 
+    // 최근 12개월 cutoff: months 배열의 가장 이른 월 (YYYYMM 정수)
+    const cutoffYm = parseInt(months[months.length - 1]);
+
     // area: 단일/복수 모두 ±5㎡ 오차 적용
     const areaValues = String(area).split(",").map(Number).filter(n => !isNaN(n));
     let areaWhere, areaBinds;
@@ -1398,12 +1401,13 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
       areaBinds = [areaValues[0] - 5, areaValues[0] + 5];
     }
 
-    // 구 내 동일 평수 모든 거래 (해제 거래 제외)
+    // 구 내 동일 평수 모든 거래 (해제 거래 제외, 최근 12개월 한정)
     const guRows = db.prepare(`
       SELECT deal_amount, umd_nm FROM transaction_cache
       WHERE lawd_cd = ? AND ${areaWhere}
         AND (cdeal_type IS NULL OR cdeal_type <> 'O')
-    `).all(lawdCd, ...areaBinds);
+        AND (deal_year * 100 + deal_month) >= ?
+    `).all(lawdCd, ...areaBinds, cutoffYm);
 
     const guPrices = guRows.map(r => r.deal_amount);
     const guAvg = guPrices.length > 0 ? Math.round(guPrices.reduce((s, p) => s + p, 0) / guPrices.length) : null;
@@ -1425,15 +1429,16 @@ app.get("/api/apartment/regional-analysis", async (req, res) => {
     const JUSO_COORD_KEY = process.env.JUSO_COORD_KEY;
     const neighborComparison = [];
 
-    // 같은 구 내 모든 동별 평균
+    // 같은 구 내 모든 동별 평균 (최근 12개월 한정)
     const allDongs = db.prepare(`
       SELECT umd_nm, AVG(deal_amount) as avg_price, COUNT(*) as cnt
       FROM transaction_cache
       WHERE lawd_cd = ? AND ${areaWhere}
         AND (cdeal_type IS NULL OR cdeal_type <> 'O')
+        AND (deal_year * 100 + deal_month) >= ?
       GROUP BY umd_nm
       HAVING cnt >= 2
-    `).all(lawdCd, ...areaBinds);
+    `).all(lawdCd, ...areaBinds, cutoffYm);
 
     if (JUSO_COORD_KEY && umdNm && allDongs.length > 1) {
       const guNmForCoord = req.query.guNm || "";

@@ -539,7 +539,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       // 지역 시세 분석 (fire-and-forget: 매매 데이터 먼저 표시, 분석은 백그라운드)
       if (data.dongSummary && data.dongSummary.length > 0) {
         setAnalysisLoading(true);
-        const priceForAnalysis = data.dongSummary[0].recentPrice;
+        // 표시용 최근가(Math.max)와 동일한 기준 사용 — dongSummary[0]은 임의 동이라 불일치 유발
+        const priceForAnalysis = Math.max(...data.dongSummary.map(d => d.recentPrice));
         const areaForAnalysis = area === "전체" ? data.dongSummary[0].area : area;
         const guNmForAnalysis = guNm || "";
         getRegionalAnalysis(lawdCd, umdNm || "", areaForAnalysis, priceForAnalysis, guNmForAnalysis)
