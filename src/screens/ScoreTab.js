@@ -4,8 +4,13 @@ import {
   View, Text, ScrollView, TouchableOpacity,
   TextInput, StyleSheet, ActivityIndicator, FlatList,
 } from "react-native";
+import { Slider } from "@miblanchard/react-native-slider";
 import { COLORS, SCORE_LABELS, SCORE_COLORS, SCORE_VALUES, calcScore, getGrade, getScoreColor, getScoreLabel, formatPrice } from "../constants";
 import { searchApartment, getRegionCode, getApartmentAreas, getTransactions, getRentTransactions, getRegionalAnalysis, getComplexInfo, getAllTimePriceRange } from "../services/apartmentApi";
+
+// 월 인덱스(YYYY*12 + (MM-1)) ↔ {year, month} 변환 헬퍼
+const ymToIndex = (ym) => ym.year * 12 + (ym.month - 1);
+const indexToYM = (idx) => ({ year: Math.floor(idx / 12), month: (idx % 12) + 1 });
 
 function ScoreButton({ value, selected, onPress, color }) {
   const isHalf = value % 1 !== 0;
@@ -512,9 +517,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
               updateProp(propId, "priceRangeBounds", bounds);
               const [fy, fm] = result.firstDate.split(".").map(Number);
               const [ly, lm] = result.lastDate.split(".").map(Number);
-              setPriceRangeStart({ year: fy, month: fm });
-              setPriceRangeEnd({ year: ly, month: lm });
-              setAppliedRange({ start: { year: fy, month: fm }, end: { year: ly, month: lm } });
+              // 사용자가 이미 슬라이더를 조작했다면 위치 보존, 아니면 전체 범위로 초기화
+              setPriceRangeStart(prev => prev || { year: fy, month: fm });
+              setPriceRangeEnd(prev => prev || { year: ly, month: lm });
+              setAppliedRange(prev => prev || { start: { year: fy, month: fm }, end: { year: ly, month: lm } });
             }
             return; // 종료 — UI fallback이 bounds 처리
           }
@@ -554,13 +560,16 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
   }
 
   // 사용자 지정 기간으로 최고·최저가 조회
-  async function handleQueryPriceRange() {
-    if (!selectedProp || !priceRangeStart || !priceRangeEnd) return;
+  // 인자로 직접 받은 start/end 우선, 없으면 component state 사용
+  async function handleQueryPriceRange(startArg, endArg) {
+    const s = startArg || priceRangeStart;
+    const e = endArg || priceRangeEnd;
+    if (!selectedProp || !s || !e) return;
     if (!selectedProp.lawdCd) return;
-    const startStr = `${priceRangeStart.year}${String(priceRangeStart.month).padStart(2, "0")}01`;
+    const startStr = `${s.year}${String(s.month).padStart(2, "0")}01`;
     // 종료 월의 마지막 날
-    const endLastDay = new Date(priceRangeEnd.year, priceRangeEnd.month, 0).getDate();
-    const endStr = `${priceRangeEnd.year}${String(priceRangeEnd.month).padStart(2, "0")}${String(endLastDay).padStart(2, "0")}`;
+    const endLastDay = new Date(e.year, e.month, 0).getDate();
+    const endStr = `${e.year}${String(e.month).padStart(2, "0")}${String(endLastDay).padStart(2, "0")}`;
     const kapt = selectedProp.kaptCode || selectedProp.complexInfo?.kaptCode || null;
     const jibun = selectedProp.complexInfo?.jibun || null;
     const umd = selectedProp.complexInfo?.umdNm || selectedProp.umdNm;
@@ -577,10 +586,10 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
       );
       if (result.status === "done" && result.allTimePriceRange) {
         updateProp(selectedProp.id, "allTimePriceRange", result.allTimePriceRange);
-        setAppliedRange({ start: priceRangeStart, end: priceRangeEnd });
+        setAppliedRange({ start: s, end: e });
       }
-    } catch (e) {
-      console.warn("기간별 거래가 조회 실패:", e.message);
+    } catch (err) {
+      console.warn("기간별 거래가 조회 실패:", err.message);
     } finally {
       setPriceQueryLoading(false);
     }
@@ -1019,18 +1028,8 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
             const minYM = bounds ? parseYM(bounds.firstDate) : null;
             const maxYM = bounds ? parseYM(bounds.lastDate) : null;
 
-            // ym → 정수 (비교용)
+            // ym → 정수 (변경 감지용 비교)
             const ymInt = (ym) => ym.year * 100 + ym.month;
-            const stepYM = (ym, delta) => {
-              let total = ym.year * 12 + (ym.month - 1) + delta;
-              return { year: Math.floor(total / 12), month: (total % 12) + 1 };
-            };
-            const clamp = (ym, lo, hi) => {
-              const v = ymInt(ym), l = ymInt(lo), h = ymInt(hi);
-              if (v < l) return lo;
-              if (v > h) return hi;
-              return ym;
-            };
             const fmtYM = (ym) => `${ym.year}.${String(ym.month).padStart(2, "0")}`;
             const fmtDateRangeStr = (s, e) => {
               const endLastDay = new Date(e.year, e.month, 0).getDate();
@@ -1071,61 +1070,47 @@ export default function ScoreTab({ criteria, properties, setScore, addProperty, 
                   </View>
                 ) : (
                 <>
-                  {/* 기간 선택 컨트롤 */}
+                  {/* 기간 선택 — dual-thumb drag slider (월 단위) */}
                   <View style={styles.dateRangePicker}>
-                    <View style={styles.dateRangeRow}>
-                      <Text style={styles.dateRangeLabel}>시작</Text>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, -12), minYM, endYM))}
-                      ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, -1), minYM, endYM))}
-                      ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
-                      <Text style={styles.dateRangeValue}>{fmtYM(startYM)}</Text>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, 1), minYM, endYM))}
-                      ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeStart(clamp(stepYM(startYM, 12), minYM, endYM))}
-                      ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
+                    <View style={styles.dateRangeValueRow}>
+                      <Text style={styles.dateRangeValueLeft}>{fmtYM(startYM)}</Text>
+                      <Text style={styles.dateRangeValueSep}>~</Text>
+                      <Text style={styles.dateRangeValueRight}>{fmtYM(endYM)}</Text>
                     </View>
-                    <View style={styles.dateRangeRow}>
-                      <Text style={styles.dateRangeLabel}>종료</Text>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, -12), startYM, maxYM))}
-                      ><Text style={styles.dateStepBtnText}>≪</Text></TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, -1), startYM, maxYM))}
-                      ><Text style={styles.dateStepBtnText}>‹</Text></TouchableOpacity>
-                      <Text style={styles.dateRangeValue}>{fmtYM(endYM)}</Text>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, 1), startYM, maxYM))}
-                      ><Text style={styles.dateStepBtnText}>›</Text></TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.dateStepBtn}
-                        onPress={() => setPriceRangeEnd(clamp(stepYM(endYM, 12), startYM, maxYM))}
-                      ><Text style={styles.dateStepBtnText}>≫</Text></TouchableOpacity>
+                    <Slider
+                      value={[ymToIndex(startYM), ymToIndex(endYM)]}
+                      minimumValue={ymToIndex(minYM)}
+                      maximumValue={ymToIndex(maxYM)}
+                      step={1}
+                      minimumTrackTintColor="#6366f1"
+                      maximumTrackTintColor="rgba(255,255,255,0.15)"
+                      thumbTintColor="#6366f1"
+                      trackStyle={{ height: 4, borderRadius: 2 }}
+                      thumbStyle={{ width: 22, height: 22, borderRadius: 11 }}
+                      onValueChange={(values) => {
+                        // 양 thumb이 교차하면 작은 값을 start, 큰 값을 end로 정규화
+                        const a = Math.min(values[0], values[1]);
+                        const b = Math.max(values[0], values[1]);
+                        setPriceRangeStart(indexToYM(a));
+                        setPriceRangeEnd(indexToYM(b));
+                      }}
+                    />
+                    <View style={styles.dateRangeBoundsRow}>
+                      <Text style={styles.dateRangeBoundText}>{fmtYM(minYM)}</Text>
+                      <Text style={styles.dateRangeBoundText}>{fmtYM(maxYM)}</Text>
                     </View>
-                    <Text style={styles.dateRangeHint}>
-                      거래 범위: {bounds.firstDate} ~ {bounds.lastDate}
-                      {!isAllTimeLoaded && " (전체 기간 데이터 로딩 중...)"}
-                    </Text>
+                    {!isAllTimeLoaded && (
+                      <Text style={styles.dateRangeHint}>전체 기간 데이터 로딩 중...</Text>
+                    )}
                   </View>
 
                   {/* 변경됨 시 안내 + 조회 버튼 */}
                   {rangeChanged && !priceQueryLoading && (
                     <View style={styles.queryPrompt}>
                       <Text style={styles.queryPromptText}>
-                        {fmtDateRangeStr(priceRangeStart, priceRangeEnd)} 사이의 거래가 정보를 확인하시겠습니까?
+                        {fmtDateRangeStr(startYM, endYM)} 사이의 거래가 정보를 확인하시겠습니까?
                       </Text>
-                      <TouchableOpacity style={styles.queryBtn} onPress={handleQueryPriceRange}>
+                      <TouchableOpacity style={styles.queryBtn} onPress={() => handleQueryPriceRange(startYM, endYM)}>
                         <Text style={styles.queryBtnText}>조회</Text>
                       </TouchableOpacity>
                     </View>
@@ -1400,13 +1385,14 @@ const styles = StyleSheet.create({
   noDataText:    { color: COLORS.textFaint, fontSize: 12, textAlign: "center", paddingVertical: 20 },
 
   // 최고/최저 거래가 - 기간 선택 컨트롤
-  dateRangePicker:     { marginBottom: 12, padding: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
-  dateRangeRow:        { flexDirection: "row", alignItems: "center", marginBottom: 6, gap: 4 },
-  dateRangeLabel:      { color: COLORS.textMuted, fontSize: 12, fontWeight: "700", width: 36 },
-  dateStepBtn:         { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" },
-  dateStepBtnText:     { color: COLORS.textMuted, fontSize: 14, fontWeight: "700" },
-  dateRangeValue:      { color: COLORS.text, fontSize: 14, fontWeight: "700", flex: 1, textAlign: "center" },
-  dateRangeHint:       { color: COLORS.textFaint, fontSize: 11, marginTop: 4, textAlign: "center" },
+  dateRangePicker:     { marginBottom: 12, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  dateRangeValueRow:   { flexDirection: "row", alignItems: "center", justifyContent: "center", marginBottom: 8, gap: 10 },
+  dateRangeValueLeft:  { color: "#6366f1", fontSize: 16, fontWeight: "700" },
+  dateRangeValueSep:   { color: COLORS.textMuted, fontSize: 14 },
+  dateRangeValueRight: { color: "#6366f1", fontSize: 16, fontWeight: "700" },
+  dateRangeBoundsRow:  { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
+  dateRangeBoundText:  { color: COLORS.textFaint, fontSize: 11 },
+  dateRangeHint:       { color: COLORS.textFaint, fontSize: 11, marginTop: 6, textAlign: "center" },
   // 조회 안내·버튼
   queryPrompt:         { marginBottom: 12, padding: 10, borderRadius: 8, backgroundColor: "rgba(99,102,241,0.08)", borderWidth: 1, borderColor: "rgba(99,102,241,0.25)" },
   queryPromptText:     { color: COLORS.text, fontSize: 12, marginBottom: 8, lineHeight: 18 },
